@@ -1281,6 +1281,28 @@ class CallManagerLite(QMainWindow):
         self.refresh_filter_header_icons("call")
         self.refresh_filter_header_icons("client")
 
+    def set_row_heights_by_line_count(self, table, start_row=0, end_row=None):
+        """내용의 명시적인 줄바꿈 수만 기준으로 행 높이를 설정합니다.
+        사용자가 직접 드래그한 행 높이는 다시 자동으로 덮어쓰지 않습니다.
+        """
+        if end_row is None:
+            end_row = table.rowCount() - 1
+        if end_row < start_row:
+            return
+
+        base_height = 30
+        line_height = 22
+        max_height = 220
+
+        for row in range(max(0, start_row), min(end_row, table.rowCount() - 1) + 1):
+            item = table.item(row, 4 if table is self.call_table else 0)
+            if item is None:
+                table.setRowHeight(row, base_height)
+                continue
+            text = str(item.text() or "")
+            lines = max(1, text.count("\\n") + 1)
+            table.setRowHeight(row, min(max_height, base_height + (lines - 1) * line_height))
+
     def update_call_table(self, data):
         self.call_table.blockSignals(True)
         self.call_table.setSortingEnabled(False)
