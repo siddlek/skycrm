@@ -35,6 +35,9 @@ import json
 import uuid
 import shutil
 import traceback
+import ftplib
+import posixpath
+from io import BytesIO
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -42,9 +45,9 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QPushButton,
     QLineEdit, QTextEdit, QLabel, QRadioButton, QGroupBox, QDateEdit, QTabWidget,
     QMessageBox, QDialog, QFileDialog, QListWidget, QListWidgetItem, QSpinBox,
-    QStyledItemDelegate, QMenu, QInputDialog, QStyle
+    QStyledItemDelegate, QMenu, QInputDialog, QStyle, QProgressBar, QCheckBox
 )
-from PyQt6.QtCore import Qt, QDate, QTimer, QEvent, QRect, QSize
+from PyQt6.QtCore import Qt, QDate, QTimer, QEvent, QRect, QSize, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon, QKeySequence, QAction, QShortcut
 from openpyxl import Workbook
 
@@ -60,10 +63,25 @@ ROW_RESIZE_DEBOUNCE_MS = 150
 # 저장 / 백업 관련 유틸리티
 # --------------------------------------------------------------------------
 
-def default_settings():
+def default_ftp_info():
+    return {"host": "", "port": 21, "user": "", "password": "", "remote_path": "/"}
+
+
+def default_storage_settings():
     return {
+        # local      : 하드디스크에만 저장
+        # ftp        : FTP 서버에만 저장
+        # local_sync : 하드디스크에 저장 + 종료/저장 시 FTP로 동기화
+        "type": "local",
         "local_path": os.getcwd(),
         "data_file": DATA_FILE_NAME,
+        "ftp": default_ftp_info()
+    }
+
+
+def default_settings():
+    return {
+        "storage": default_storage_settings(),
         "call_widths": [],
         "client_widths": [],
         "autosave_minutes": 5
@@ -72,6 +90,35 @@ def default_settings():
 
 def default_data():
     return {"clients": {}, "calls": []}
+
+
+# --------------------------------------------------------------------------
+# FTP 유틸리티 (저장 스레드에서 사용)
+# --------------------------------------------------------------------------
+
+def ftp_connect(ftp_info, timeout=10):
+    ftp = ftplib.FTP()
+    ftp.connect(ftp_info.get("host", ""), int(ftp_info.get("port", 21) or 21), timeout=timeout)
+    ftp.login(ftp_info.get("user", ""), ftp_info.get("password", ""))
+    return ftp
+
+
+def ftp_ensure_dir(ftp, remote_path):
+    remote_path = (remote_path or "/").replace("\\", "/")
+    if not remote_path.startswith("/"):
+        remote_path = "/" + remote_path
+    ftp.cwd("/")
+    for part in [p for p in remote_path.split("/") if p]:
+        try:
+            ftp.cwd(part)
+        except Exception:
+            ftp.mkd(part)
+            ftp.cwd(part)
+
+
+class SaveCancelled(Exception):
+    """사용자가 저장 도중 취소를 눌렀을 때 발생시키는 예외."""
+    pass
 
 
 def backup_paths(path):
@@ -209,6 +256,155 @@ class AutoHeightTable(QTableWidget):
 
 
 # --------------------------------------------------------------------------
+# 저장 작업 스레드 (진행률 표시 + 취소 지원)
+# --------------------------------------------------------------------------
+
+class SaveWorker(QThread):
+    progress = pyqtSignal(int, str)   # 0~100, 상태 메시지
+    finished_result = pyqtSignal(bool, bool, str)   # 성공여부, 취소여부, 메시지
+
+    def __init__(self, path, data, storage, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.data = data
+        self.storage = storage
+        self._cancel_requested = False
+
+    def request_cancel(self):
+        self._cancel_requested = True
+
+    def _check_cancel(self):
+        if self._cancel_requested:
+            raise SaveCancelled("사용자가 저장을 취소했습니다.")
+
+    def run(self):
+        try:
+            self.progress.emit(5, "이전 저장본 백업 중...")
+            self._check_cancel()
+            rotate_backups(self.path)
+
+            self.progress.emit(30, "로컬 파일에 저장 중...")
+            self._check_cancel()
+            atomic_write_json(self.path, self.data)
+
+            storage_type = self.storage.get("type", "local")
+            if storage_type == "local":
+                self.progress.emit(100, "저장 완료")
+                self.finished_result.emit(True, False, "")
+                return
+
+            # ftp 또는 local_sync: FTP 업로드까지 진행
+            self.progress.emit(50, "FTP 서버에 연결하는 중...")
+            self._check_cancel()
+            ftp_info = self.storage.get("ftp", {})
+            if not ftp_info.get("host"):
+                raise ValueError("FTP 주소가 설정되어 있지 않습니다. 환경설정에서 입력해 주세요.")
+
+            ftp = ftp_connect(ftp_info)
+            try:
+                self.progress.emit(65, "FTP 폴더 확인 중...")
+                self._check_cancel()
+                ftp_ensure_dir(ftp, ftp_info.get("remote_path", "/"))
+
+                self.progress.emit(80, "FTP로 업로드 중...")
+                raw = json.dumps(self.data, ensure_ascii=False, indent=2).encode("utf-8")
+                buf = BytesIO(raw)
+
+                def block_callback(_block):
+                    # storbinary는 블록 단위로 콜백을 호출하므로, 여기서 취소 여부를
+                    # 확인해서 즉시 중단할 수 있게 합니다.
+                    if self._cancel_requested:
+                        raise SaveCancelled("사용자가 업로드를 취소했습니다.")
+
+                file_name = self.storage.get("data_file") or DATA_FILE_NAME
+                ftp.storbinary(f"STOR {file_name}", buf, callback=block_callback)
+            finally:
+                try:
+                    ftp.quit()
+                except Exception:
+                    pass
+
+            self.progress.emit(100, "저장 및 FTP 동기화 완료")
+            self.finished_result.emit(True, False, "")
+        except SaveCancelled as e:
+            self.finished_result.emit(False, True, str(e))
+        except Exception as e:
+            self.finished_result.emit(False, False, str(e))
+
+
+class SaveProgressDialog(QDialog):
+    """저장 진행 상황을 눈으로 보여주고, 도중에 취소할 수 있는 창.
+    완료되면 자동으로 닫힙니다."""
+
+    def __init__(self, path, data, storage, parent=None, title="저장 중"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(420)
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+
+        self.success = False
+        self.cancelled = False
+        self.error_message = ""
+
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel("저장 준비 중...")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+
+        btn_row = QHBoxLayout()
+        self.cancel_btn = QPushButton("취소")
+        self.cancel_btn.setObjectName("DangerButton")
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.cancel_btn)
+
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.progress_bar)
+        layout.addLayout(btn_row)
+
+        self.worker = SaveWorker(path, data, storage, self)
+        self.worker.progress.connect(self.on_progress)
+        self.worker.finished_result.connect(self.on_finished)
+        self.cancel_btn.clicked.connect(self.on_cancel_clicked)
+
+    def start(self):
+        self.worker.start()
+        self.exec()
+        return self.success, self.cancelled, self.error_message
+
+    def on_progress(self, percent, message):
+        self.progress_bar.setValue(percent)
+        self.status_label.setText(message)
+
+    def on_cancel_clicked(self):
+        self.status_label.setText("취소하는 중...")
+        self.cancel_btn.setEnabled(False)
+        self.worker.request_cancel()
+
+    def on_finished(self, success, cancelled, message):
+        self.success = success
+        self.cancelled = cancelled
+        self.error_message = message
+        if success:
+            self.status_label.setText("완료되었습니다.")
+            self.progress_bar.setValue(100)
+        elif cancelled:
+            self.status_label.setText("취소되었습니다.")
+        else:
+            self.status_label.setText("오류가 발생했습니다.")
+        # 사용자가 진행 상태를 눈으로 잠깐 확인할 수 있도록 짧게 대기 후 자동으로 닫힘
+        QTimer.singleShot(350, self.accept)
+
+    def closeEvent(self, event):
+        # 창을 강제로 닫으려 하면(x 버튼) 취소로 처리
+        if self.worker.isRunning():
+            self.worker.request_cancel()
+            self.worker.wait(3000)
+        event.accept()
+
+
+# --------------------------------------------------------------------------
 # 메인 윈도우
 # --------------------------------------------------------------------------
 
@@ -231,10 +427,11 @@ class CallManagerLite(QMainWindow):
         self.name_suggestion_list = None
         self.table_filter_headers = {}
         self.closing_app = False
+        self.pending_ftp_sync = False
 
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
-        self.save_timer.timeout.connect(self.save_data)
+        self.save_timer.timeout.connect(lambda: self.save_data(show_progress=False))
 
         self.load_settings()
         self.ensure_settings_shape()
@@ -257,6 +454,21 @@ class CallManagerLite(QMainWindow):
         for key, value in defaults.items():
             self.settings.setdefault(key, value)
 
+        storage = self.settings.setdefault("storage", default_storage_settings())
+        # 예전 버전(플랫 구조: local_path/data_file이 최상위에 있던 설정 파일) 호환용 이전
+        if "local_path" in self.settings and "local_path" not in storage:
+            storage["local_path"] = self.settings.pop("local_path")
+        if "data_file" in self.settings and "data_file" not in storage:
+            storage["data_file"] = self.settings.pop("data_file")
+
+        for key, value in default_storage_settings().items():
+            storage.setdefault(key, value)
+        ftp_info = storage.setdefault("ftp", default_ftp_info())
+        for key, value in default_ftp_info().items():
+            ftp_info.setdefault(key, value)
+        if storage.get("type") not in ("local", "ftp", "local_sync"):
+            storage["type"] = "local"
+
     def ensure_data_shape(self):
         self.data.setdefault("clients", {})
         self.data.setdefault("calls", [])
@@ -265,20 +477,37 @@ class CallManagerLite(QMainWindow):
         for call in self.data["calls"]:
             call.setdefault("id", str(uuid.uuid4()))
 
-    # ---------------------------------------------------------------- 데이터 파일 경로
+    # ---------------------------------------------------------------- 저장소 설정
+    def storage_settings(self):
+        self.ensure_settings_shape()
+        return self.settings["storage"]
+
     def data_file_name(self):
-        name = os.path.basename(str(self.settings.get("data_file") or DATA_FILE_NAME).replace("\\", "/"))
+        name = os.path.basename(str(self.storage_settings().get("data_file") or DATA_FILE_NAME).replace("\\", "/"))
         return name or DATA_FILE_NAME
 
     def local_data_path(self, folder=None, file_name=None):
-        folder = folder if folder is not None else (self.settings.get("local_path") or os.getcwd())
+        folder = folder if folder is not None else (self.storage_settings().get("local_path") or os.getcwd())
         file_name = file_name or self.data_file_name()
         return os.path.join(folder, file_name)
 
+    def is_ftp_only(self):
+        return self.storage_settings().get("type") == "ftp"
+
+    def is_local_sync_enabled(self):
+        return self.storage_settings().get("type") == "local_sync"
+
     # ---------------------------------------------------------------- 불러오기 (+ 자동 복구)
     def load_data_with_recovery(self):
-        path = self.local_data_path()
+        storage = self.storage_settings()
         recovered_from = None
+
+        if storage.get("type") == "ftp":
+            self.load_data_from_ftp(show_error=True)
+            self.ensure_data_shape()
+            return
+
+        path = self.local_data_path()
 
         if os.path.exists(path):
             try:
@@ -310,25 +539,89 @@ class CallManagerLite(QMainWindow):
                 f"복구한 파일: {recovered_from}\n\n"
                 f"내용을 확인하신 뒤 저장(Ctrl+S)해 주세요."
             ))
-        elif os.path.exists(path) and not self.data.get("calls") and not self.data.get("clients") and recovered_from is None:
-            # 파일은 있는데 완전히 비어있는 상태로 로드된 경우 -> 사용자에게 알림만
-            pass
 
-    # ---------------------------------------------------------------- 저장 (원자적 쓰기 + 백업 회전)
-    def save_data(self):
-        self.ensure_data_shape()
-        path = self.local_data_path()
+    def load_data_from_ftp(self, show_error=True):
+        storage = self.storage_settings()
+        ftp_info = storage.get("ftp", {})
+        if not ftp_info.get("host"):
+            return
+        ftp = None
         try:
-            rotate_backups(path)
-            atomic_write_json(path, self.data)
-            self.statusBar().showMessage(f"저장됨: {path}  ({datetime.now().strftime('%H:%M:%S')})", 3000)
-            return True
+            ftp = ftp_connect(ftp_info)
+            ftp_ensure_dir(ftp, ftp_info.get("remote_path", "/"))
+            chunks = []
+            try:
+                ftp.retrbinary(f"RETR {self.data_file_name()}", chunks.append)
+            except ftplib.error_perm as e:
+                if str(e).startswith("550"):
+                    # 파일이 아직 없는 경우 (최초 실행) -> 새 데이터로 시작
+                    return
+                raise
+            raw = b"".join(chunks).decode("utf-8")
+            loaded = json.loads(raw)
+            if not is_valid_data_shape(loaded):
+                raise ValueError("FTP의 데이터 형식이 올바르지 않습니다.")
+            self.data = loaded
         except Exception as e:
-            QMessageBox.warning(
-                self, "저장 오류",
-                f"데이터를 저장하지 못했습니다. 이전 저장본은 안전하게 보존되어 있습니다.\n\n원인: {e}"
-            )
+            if show_error:
+                QTimer.singleShot(200, lambda: QMessageBox.warning(
+                    self, "FTP 불러오기 오류", f"FTP에서 데이터를 읽지 못했습니다.\n\n원인: {e}"
+                ))
+        finally:
+            if ftp:
+                try:
+                    ftp.quit()
+                except Exception:
+                    pass
+
+    # ---------------------------------------------------------------- 저장 (진행창 + 취소 지원)
+    def save_data(self, show_progress=True, parent_for_dialog=None):
+        """데이터를 저장합니다. 로컬은 항상 백업 회전 + 원자적 쓰기로 저장되고,
+        저장소 종류가 FTP/동기화이면 FTP 업로드까지 진행창을 보여주며 진행됩니다.
+        진행창에서 취소하면 저장이 중단되고 False를 반환합니다."""
+        self.ensure_data_shape()
+        storage = self.storage_settings()
+        path = self.local_data_path()
+
+        if not show_progress:
+            # 자동 저장(디바운스)처럼 조용히 저장할 때는 진행창 없이 처리
+            try:
+                rotate_backups(path)
+                atomic_write_json(path, self.data)
+                if self.is_local_sync_enabled():
+                    self.pending_ftp_sync = True
+                self.statusBar().showMessage(f"저장됨: {path}  ({datetime.now().strftime('%H:%M:%S')})", 3000)
+                return True
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "저장 오류",
+                    f"데이터를 저장하지 못했습니다. 이전 저장본은 안전하게 보존되어 있습니다.\n\n원인: {e}"
+                )
+                return False
+
+        dialog = SaveProgressDialog(path, self.data, storage, parent=parent_for_dialog or self, title="저장 중")
+        success, cancelled, message = dialog.start()
+
+        if success:
+            self.statusBar().showMessage(f"저장됨: {path}  ({datetime.now().strftime('%H:%M:%S')})", 3000)
+            self.pending_ftp_sync = False
+            return True
+        if cancelled:
+            self.statusBar().showMessage("저장이 취소되었습니다.", 4000)
             return False
+        QMessageBox.warning(
+            self, "저장 오류",
+            f"데이터를 저장하지 못했습니다. 이전 저장본은 안전하게 보존되어 있습니다.\n\n원인: {message}"
+        )
+        return False
+
+    def sync_now(self):
+        """메뉴에서 'FTP 지금 동기화'를 눌렀을 때 사용."""
+        storage = self.storage_settings()
+        if storage.get("type") == "local":
+            QMessageBox.information(self, "FTP 동기화", "현재 저장 방식이 '하드디스크'로 설정되어 있어 동기화할 FTP가 없습니다.\n환경설정에서 FTP 방식을 선택해 주세요.")
+            return
+        self.save_data(show_progress=True)
 
     def save_settings(self):
         try:
@@ -447,9 +740,13 @@ class CallManagerLite(QMainWindow):
         fileMenu.addAction(exportAction)
 
         settingMenu = menubar.addMenu("설정(&S)")
-        preferenceAction = QAction("환경설정", self)
+        preferenceAction = QAction("환경설정 (저장 방식 / FTP)", self)
         preferenceAction.triggered.connect(self.open_preferences_dialog)
         settingMenu.addAction(preferenceAction)
+
+        syncAction = QAction("FTP 지금 동기화", self)
+        syncAction.triggered.connect(self.sync_now)
+        settingMenu.addAction(syncAction)
         settingMenu.addSeparator()
 
         widthResetAction = QAction("표 너비 초기화", self)
@@ -861,35 +1158,42 @@ class CallManagerLite(QMainWindow):
         p_table.setItemDelegateForColumn(3, MultiLineDelegate(p_table))
         d_layout.addWidget(p_table)
 
-        def apply_sub_filter():
-            kw = p_input.text().lower().strip()
-            s_d = p_start.date().toPyDate()
-            e_d = p_end.date().toPyDate()
-            if e_d < s_d:
-                s_d, e_d = e_d, s_d
-            p_table.blockSignals(True)
-            p_table.setSortingEnabled(False)
-            p_table.setRowCount(0)
-            for c in all_calls:
-                try:
-                    c_date = datetime.strptime(c.get("date", ""), "%Y-%m-%d %H:%M:%S").date()
-                    phone = str(c.get("phone", "")).lower()
-                    content = str(c.get("content", "")).lower()
-                    call_type = str(c.get("type", "")).lower()
-                    if (s_d <= c_date <= e_d) and (not kw or kw in content or kw in phone or kw in call_type):
-                        curr = p_table.rowCount()
-                        p_table.insertRow(curr)
-                        p_table.setItem(curr, 0, QTableWidgetItem(str(c.get("date", ""))))
-                        p_table.setItem(curr, 1, QTableWidgetItem(str(c.get("phone", ""))))
-                        p_table.setItem(curr, 2, QTableWidgetItem(str(c.get("type", ""))))
-                        content_item = QTableWidgetItem(str(c.get("content", "")))
-                        content_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-                        p_table.setItem(curr, 3, content_item)
-                except Exception:
-                    continue
-            p_table.setSortingEnabled(True)
-            p_table.blockSignals(False)
-            p_table.schedule_row_resize()
+        def apply_sub_filter(*_args):
+            try:
+                kw = p_input.text().lower().strip()
+                s_qdate = p_start.date()
+                e_qdate = p_end.date()
+                if not s_qdate.isValid() or not e_qdate.isValid():
+                    return
+                s_d = s_qdate.toPyDate()
+                e_d = e_qdate.toPyDate()
+                if e_d < s_d:
+                    s_d, e_d = e_d, s_d
+                p_table.blockSignals(True)
+                p_table.setSortingEnabled(False)
+                p_table.setRowCount(0)
+                for c in all_calls:
+                    try:
+                        c_date = datetime.strptime(c.get("date", ""), "%Y-%m-%d %H:%M:%S").date()
+                        phone = str(c.get("phone", "")).lower()
+                        content = str(c.get("content", "")).lower()
+                        call_type = str(c.get("type", "")).lower()
+                        if (s_d <= c_date <= e_d) and (not kw or kw in content or kw in phone or kw in call_type):
+                            curr = p_table.rowCount()
+                            p_table.insertRow(curr)
+                            p_table.setItem(curr, 0, QTableWidgetItem(str(c.get("date", ""))))
+                            p_table.setItem(curr, 1, QTableWidgetItem(str(c.get("phone", ""))))
+                            p_table.setItem(curr, 2, QTableWidgetItem(str(c.get("type", ""))))
+                            content_item = QTableWidgetItem(str(c.get("content", "")))
+                            content_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                            p_table.setItem(curr, 3, content_item)
+                    except Exception:
+                        continue
+                p_table.setSortingEnabled(True)
+                p_table.blockSignals(False)
+                p_table.schedule_row_resize()
+            except Exception as e:
+                self.show_nonfatal_error("검색 필터 오류", e)
 
         p_input.returnPressed.connect(apply_sub_filter)
         p_input.textChanged.connect(lambda: apply_sub_filter() if not p_input.text().strip() else None)
@@ -954,30 +1258,48 @@ class CallManagerLite(QMainWindow):
         if not self.main_search_input.text().strip():
             self.filter_calls()
 
-    def filter_calls(self):
-        kw = self.main_search_input.text().lower().strip()
-        start = self.main_start_date.date().toPyDate()
-        end = self.main_end_date.date().toPyDate()
-        if end < start:
-            start, end = end, start
-        filtered = []
-        for c in self.data["calls"]:
-            try:
-                c_date = datetime.strptime(c.get("date", ""), "%Y-%m-%d %H:%M:%S").date()
-            except Exception:
-                continue
-            name = str(c.get("name", "")).lower()
-            content = str(c.get("content", "")).lower()
-            phone = str(c.get("phone", "")).lower()
-            call_type = str(c.get("type", "")).lower()
-            basic_match = not kw or kw in name or kw in content or kw in phone or kw in call_type
-            column_match = all(
-                str(filter_text).lower() in self.call_value_by_column(c, col)
-                for col, filter_text in self.call_column_filters.items()
-            )
-            if (start <= c_date <= end) and basic_match and column_match:
-                filtered.append(c)
-        self.update_call_table(filtered)
+    def filter_calls(self, *_args):
+        # *_args: QDateEdit.dateChanged(QDate)나 QPushButton.clicked(bool)처럼
+        # 신호가 추가 인자를 넘겨줘도 안전하게 무시하기 위함입니다.
+        try:
+            kw = self.main_search_input.text().lower().strip()
+
+            start_qdate = self.main_start_date.date()
+            end_qdate = self.main_end_date.date()
+            # 사용자가 날짜 칸에 직접 숫자를 입력하는 도중에는 QDate가 일시적으로
+            # 비어있거나(0000-00-00 등) 유효하지 않은 상태가 될 수 있습니다.
+            # 이때 곧바로 toPyDate()를 부르면 예외가 발생해서 프로그램 전체가
+            # 꺼져버렸던 것이 날짜 관련 오류의 실제 원인이었습니다.
+            # -> 날짜가 아직 유효하지 않으면 이번 갱신은 조용히 건너뜁니다.
+            if not start_qdate.isValid() or not end_qdate.isValid():
+                return
+
+            start = start_qdate.toPyDate()
+            end = end_qdate.toPyDate()
+            if end < start:
+                start, end = end, start
+
+            filtered = []
+            for c in self.data["calls"]:
+                try:
+                    c_date = datetime.strptime(c.get("date", ""), "%Y-%m-%d %H:%M:%S").date()
+                except Exception:
+                    continue
+                name = str(c.get("name", "")).lower()
+                content = str(c.get("content", "")).lower()
+                phone = str(c.get("phone", "")).lower()
+                call_type = str(c.get("type", "")).lower()
+                basic_match = not kw or kw in name or kw in content or kw in phone or kw in call_type
+                column_match = all(
+                    str(filter_text).lower() in self.call_value_by_column(c, col)
+                    for col, filter_text in self.call_column_filters.items()
+                )
+                if (start <= c_date <= end) and basic_match and column_match:
+                    filtered.append(c)
+            self.update_call_table(filtered)
+        except Exception as e:
+            # 예상치 못한 오류가 나더라도 프로그램이 꺼지지 않고, 알림만 뜨도록 합니다.
+            self.show_nonfatal_error("검색 필터 오류", e)
 
     def filter_clients(self):
         kw = self.client_search_input.text().lower().strip()
@@ -1216,7 +1538,8 @@ class CallManagerLite(QMainWindow):
     def open_data_file_dialog(self):
         if not self.confirm_save_before_open():
             return
-        start_folder = self.settings.get("local_path") or os.getcwd()
+        storage = self.storage_settings()
+        start_folder = storage.get("local_path") or os.getcwd()
         path, _ = QFileDialog.getOpenFileName(self, "데이터 파일 열기", start_folder, "JSON 데이터 (*.json);;모든 파일 (*.*)")
         if not path:
             return
@@ -1226,8 +1549,9 @@ class CallManagerLite(QMainWindow):
                 raise ValueError("데이터 형식이 올바르지 않습니다.")
             self.data = loaded
             self.ensure_data_shape()
-            self.settings["local_path"] = os.path.dirname(path) or os.getcwd()
-            self.settings["data_file"] = os.path.basename(path)
+            storage["type"] = "local"
+            storage["local_path"] = os.path.dirname(path) or os.getcwd()
+            storage["data_file"] = os.path.basename(path)
             self.update_all()
             self.save_settings()
             QMessageBox.information(self, "데이터 열기", f"데이터 파일을 열었습니다.\n\n{path}")
@@ -1237,13 +1561,14 @@ class CallManagerLite(QMainWindow):
     def save_current_data_file(self, checked=False, show_message=True):
         if self.save_timer.isActive():
             self.save_timer.stop()
-        ok = self.save_data()
+        ok = self.save_data(show_progress=True)
         self.save_settings()
         if show_message and ok:
-            QMessageBox.information(self, "저장", f"저장했습니다.\n\n{self.local_data_path()}")
+            self.statusBar().showMessage("저장되었습니다.", 3000)
 
     def save_data_as_dialog(self):
-        start_folder = self.settings.get("local_path") or os.getcwd()
+        storage = self.storage_settings()
+        start_folder = storage.get("local_path") or os.getcwd()
         default_path = os.path.join(start_folder, self.data_file_name())
         path, _ = QFileDialog.getSaveFileName(self, "다른 이름으로 저장", default_path, "JSON 데이터 (*.json);;모든 파일 (*.*)")
         if not path:
@@ -1251,11 +1576,10 @@ class CallManagerLite(QMainWindow):
         if not os.path.splitext(path)[1]:
             path += ".json"
         try:
-            self.settings["local_path"] = os.path.dirname(path) or os.getcwd()
-            self.settings["data_file"] = os.path.basename(path)
-            self.save_data()
+            storage["local_path"] = os.path.dirname(path) or os.getcwd()
+            storage["data_file"] = os.path.basename(path)
+            self.save_data(show_progress=True)
             self.save_settings()
-            QMessageBox.information(self, "다른 이름으로 저장", f"저장했습니다.\n\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "저장 오류", f"다른 이름으로 저장하지 못했습니다.\n\n원인: {e}")
 
@@ -1325,24 +1649,65 @@ class CallManagerLite(QMainWindow):
 
     # ---------------------------------------------------------------- 환경설정
     def open_preferences_dialog(self):
+        storage = json.loads(json.dumps(self.storage_settings(), ensure_ascii=False))  # 편집용 사본
         dialog = QDialog(self)
         dialog.setWindowTitle("환경설정")
-        dialog.setMinimumWidth(560)
+        dialog.setMinimumWidth(620)
         layout = QVBoxLayout(dialog)
 
-        desc = QLabel("데이터를 저장할 폴더와 자동 저장 간격을 설정합니다.\n"
+        desc = QLabel("데이터를 저장할 방식과 폴더, 자동 저장 간격을 설정합니다.\n"
                        "(저장할 때마다 이전 버전 최대 3개가 자동으로 함께 보관됩니다.)")
         desc.setObjectName("PageSubtitle")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
-        path_group = QGroupBox("저장 폴더")
+        type_group = QGroupBox("저장 방식")
+        type_layout = QVBoxLayout(type_group)
+        local_radio = QRadioButton("하드디스크에만 저장")
+        ftp_radio = QRadioButton("FTP 서버에만 저장")
+        sync_radio = QRadioButton("하드디스크에 저장 + FTP로 동기화")
+        local_radio.setChecked(storage.get("type", "local") == "local")
+        ftp_radio.setChecked(storage.get("type") == "ftp")
+        sync_radio.setChecked(storage.get("type") == "local_sync")
+        type_layout.addWidget(local_radio)
+        type_layout.addWidget(ftp_radio)
+        type_layout.addWidget(sync_radio)
+        layout.addWidget(type_group)
+
+        path_group = QGroupBox("하드디스크 저장 폴더")
         path_layout = QHBoxLayout(path_group)
-        path_input = QLineEdit(self.settings.get("local_path") or os.getcwd())
+        path_input = QLineEdit(storage.get("local_path") or os.getcwd())
         browse_btn = QPushButton("찾아보기")
         path_layout.addWidget(path_input, 1)
         path_layout.addWidget(browse_btn)
         layout.addWidget(path_group)
+
+        ftp_group = QGroupBox("FTP 서버 정보")
+        ftp_layout = QGridLayout(ftp_group)
+        ftp_info = storage.get("ftp", default_ftp_info())
+        host_input = QLineEdit(ftp_info.get("host", ""))
+        host_input.setPlaceholderText("예: ftp.example.com")
+        port_input = QSpinBox()
+        port_input.setRange(1, 65535)
+        port_input.setValue(int(ftp_info.get("port", 21) or 21))
+        user_input = QLineEdit(ftp_info.get("user", ""))
+        password_input = QLineEdit(ftp_info.get("password", ""))
+        password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        remote_path_input = QLineEdit(ftp_info.get("remote_path", "/") or "/")
+        test_btn = QPushButton("연결 테스트")
+
+        ftp_layout.addWidget(QLabel("주소:"), 0, 0)
+        ftp_layout.addWidget(host_input, 0, 1)
+        ftp_layout.addWidget(QLabel("포트:"), 0, 2)
+        ftp_layout.addWidget(port_input, 0, 3)
+        ftp_layout.addWidget(QLabel("아이디:"), 1, 0)
+        ftp_layout.addWidget(user_input, 1, 1)
+        ftp_layout.addWidget(QLabel("비밀번호:"), 1, 2)
+        ftp_layout.addWidget(password_input, 1, 3)
+        ftp_layout.addWidget(QLabel("경로:"), 2, 0)
+        ftp_layout.addWidget(remote_path_input, 2, 1, 1, 2)
+        ftp_layout.addWidget(test_btn, 2, 3)
+        layout.addWidget(ftp_group)
 
         autosave_group = QGroupBox("자동 저장")
         autosave_layout = QGridLayout(autosave_group)
@@ -1366,28 +1731,74 @@ class CallManagerLite(QMainWindow):
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
 
+        def collect_ftp_info():
+            return {
+                "host": host_input.text().strip(),
+                "port": port_input.value(),
+                "user": user_input.text().strip(),
+                "password": password_input.text(),
+                "remote_path": remote_path_input.text().strip() or "/"
+            }
+
+        def set_controls_enabled():
+            use_ftp_only = ftp_radio.isChecked()
+            use_sync = sync_radio.isChecked()
+            path_group.setEnabled(not use_ftp_only)
+            ftp_group.setEnabled(use_ftp_only or use_sync)
+
         def browse_local():
             folder = QFileDialog.getExistingDirectory(dialog, "데이터 저장 폴더 선택", path_input.text() or os.getcwd())
             if folder:
                 path_input.setText(folder)
 
-        def accept_preferences():
-            folder = path_input.text().strip() or os.getcwd()
-            try:
-                os.makedirs(folder, exist_ok=True)
-            except Exception as e:
-                QMessageBox.warning(dialog, "저장경로 오류", f"저장 폴더를 만들 수 없습니다.\n\n원인: {e}")
+        def test_connection():
+            info = collect_ftp_info()
+            if not info["host"]:
+                QMessageBox.warning(dialog, "FTP 확인", "FTP 주소를 입력해 주세요.")
                 return
-            self.settings["local_path"] = folder
+            try:
+                ftp = ftp_connect(info)
+                ftp_ensure_dir(ftp, info["remote_path"])
+                ftp.quit()
+                QMessageBox.information(dialog, "FTP 연결", "FTP 연결과 경로 확인이 완료되었습니다.")
+            except Exception as e:
+                QMessageBox.warning(dialog, "FTP 연결 오류", f"FTP에 연결하지 못했습니다.\n\n원인: {e}")
+
+        def accept_preferences():
+            if ftp_radio.isChecked() or sync_radio.isChecked():
+                info = collect_ftp_info()
+                if not info["host"]:
+                    QMessageBox.warning(dialog, "FTP 확인", "FTP 주소를 입력해 주세요.")
+                    return
+            else:
+                info = collect_ftp_info()
+
+            folder = path_input.text().strip() or os.getcwd()
+            if not ftp_radio.isChecked():
+                try:
+                    os.makedirs(folder, exist_ok=True)
+                except Exception as e:
+                    QMessageBox.warning(dialog, "저장경로 오류", f"저장 폴더를 만들 수 없습니다.\n\n원인: {e}")
+                    return
+
+            live_storage = self.storage_settings()
+            live_storage["type"] = "ftp" if ftp_radio.isChecked() else ("local_sync" if sync_radio.isChecked() else "local")
+            live_storage["local_path"] = folder
+            live_storage["ftp"] = info
             self.settings["autosave_minutes"] = autosave_minutes.value()
             self.save_settings()
-            self.save_data()
-            QMessageBox.information(dialog, "환경설정", "환경설정이 저장되었습니다.")
             dialog.accept()
+            # 방식이 바뀌었을 수 있으니 새 설정 그대로 진행창을 보여주며 저장
+            self.save_data(show_progress=True)
 
         browse_btn.clicked.connect(browse_local)
+        test_btn.clicked.connect(test_connection)
+        local_radio.toggled.connect(set_controls_enabled)
+        ftp_radio.toggled.connect(set_controls_enabled)
+        sync_radio.toggled.connect(set_controls_enabled)
         ok_btn.clicked.connect(accept_preferences)
         cancel_btn.clicked.connect(dialog.reject)
+        set_controls_enabled()
         dialog.exec()
 
     # ---------------------------------------------------------------- 엑셀 내보내기
@@ -1410,7 +1821,7 @@ class CallManagerLite(QMainWindow):
                 ws.append([c.get("name", ""), c.get("date", ""), c.get("phone", ""), c.get("type", ""), c.get("content", "")])
             export_name = "통화기록"
 
-        folder = self.settings.get("local_path") or os.getcwd()
+        folder = self.storage_settings().get("local_path") or os.getcwd()
         filename = os.path.join(folder, f"SkyCRM_{export_name}_{datetime.now().strftime('%m%d_%H%M')}.xlsx")
         try:
             wb.save(filename)
@@ -1420,24 +1831,26 @@ class CallManagerLite(QMainWindow):
 
     # ---------------------------------------------------------------- 종료
     def closeEvent(self, event):
-        app = QApplication.instance()
-        if app:
-            try:
-                app.removeEventFilter(self)
-            except Exception:
-                pass
+        if self.closing_app:
+            # 이미 종료가 확정된 상태에서 다시 들어오는 경우를 대비한 안전장치
+            event.accept()
+            return
+
         if self.save_timer.isActive():
             self.save_timer.stop()
 
-        ok = self.save_data()
+        # 종료 시에는 항상 진행창을 띄워서, 저장이 실제로 얼마나 진행됐는지
+        # 눈으로 확인할 수 있게 합니다. 저장 중 '취소'를 누르면 종료 자체를 취소합니다.
+        ok = self.save_data(show_progress=True, parent_for_dialog=self)
         self.save_settings()
 
         if not ok:
             reply = QMessageBox.question(
-                self, "저장 실패",
-                "마지막 변경사항을 저장하지 못했습니다.\n"
-                "이전에 저장된 내용은 안전하게 남아 있습니다.\n\n"
-                "그래도 종료하시겠습니까? (아니오를 누르면 프로그램이 계속 열려 있습니다)",
+                self, "저장되지 않음",
+                "변경사항이 저장되지 않았습니다.\n"
+                "(취소를 눌렀거나 오류가 발생했습니다. 이전에 저장된 내용은 안전하게 남아 있습니다.)\n\n"
+                "그래도 저장하지 않고 종료하시겠습니까?\n"
+                "(아니오를 누르면 프로그램이 계속 열려 있으니 다시 저장을 시도할 수 있습니다)",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No
             )
@@ -1445,6 +1858,12 @@ class CallManagerLite(QMainWindow):
                 event.ignore()
                 return
 
+        app = QApplication.instance()
+        if app:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
         self.closing_app = True
         event.accept()
 
