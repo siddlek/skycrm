@@ -272,7 +272,7 @@ class AutoHeightTable(QTableWidget):
             item = self.item(row, col)
             if item:
                 max_lines = max(max_lines, self._line_count(item.text()))
-        return min(self.MAX_AUTO_HEIGHT, self.BASE_ROW_HEIGHT + (max_lines - 1) * self.LINE_HEIGHT)
+        return min(self.MAX_AUTO_HEIGHT, self.BASE_ROW_HEIGHT + max_lines * self.LINE_HEIGHT)
 
     def resize_row_from_text(self, row):
         if 0 <= row < self.rowCount():
@@ -294,8 +294,10 @@ class AutoHeightTable(QTableWidget):
             self.resize_row_from_text(row)
 
     def schedule_row_resize(self, delay=0):
-        # 호환용 메서드. 전체 행을 다시 계산하지 않고 현재 보이는 행만 계산합니다.
-        QTimer.singleShot(delay, self.resize_visible_rows_from_text)
+        # 호환용 메서드입니다. 이제 예약된 전체/부분 자동 높이 계산을 하지 않습니다.
+        # 검색 후 자동 높이는 표시 시점에 한 번만 적용하고,
+        # 이후에는 사용자가 개별 행을 직접 조절할 수 있습니다.
+        return
 
 
 # --------------------------------------------------------------------------
@@ -833,7 +835,12 @@ class CallManagerLite(QMainWindow):
         table.setShowGrid(False)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        table.verticalHeader().setVisible(False)
+        # 세로 헤더를 보여주어 각 행의 경계선을 마우스로 드래그해
+        # 개별 행 높이를 직접 조절할 수 있게 합니다.
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        table.verticalHeader().setMinimumSectionSize(28)
+        table.verticalHeader().setDefaultSectionSize(48)
+        table.verticalHeader().setVisible(True)
         table.horizontalHeader().setStretchLastSection(True)
         return table
 
@@ -1011,11 +1018,10 @@ class CallManagerLite(QMainWindow):
 
     # ---------------------------------------------------------------- 통화 기록 CRUD
     def add_call(self):
+        # 거래처명은 선택 입력입니다.
+        # 비워두고 통화기록만 저장할 수 있으며, 빈 거래처 DB 항목은 만들지 않습니다.
         name = self.name_input.text().strip()
-        if not name:
-            QMessageBox.warning(self, "입력 확인", "거래처명을 입력해 주세요.")
-            return
-        if name not in self.data["clients"]:
+        if name and name not in self.data["clients"]:
             self.data["clients"][name] = ["", "", "", ""]
         record = {
             "id": str(uuid.uuid4()),
@@ -1633,7 +1639,6 @@ class CallManagerLite(QMainWindow):
         if self.settings.get("client_widths"):
             for i, w in enumerate(self.settings["client_widths"][:len(self.CLIENT_HEADERS)]):
                 self.client_table.setColumnWidth(i, w)
-        self.call_table.schedule_row_resize()
         self.client_table.schedule_row_resize(0)
 
     def reset_widths(self):
