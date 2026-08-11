@@ -56,7 +56,7 @@ DATA_FILE_NAME = "call_data.json"
 SETTINGS_FILE = "call_settings_lite.json"
 ICON_FILE = "skycrm_icon.ico"
 BACKUP_SLOTS = 3
-ROW_RESIZE_DEBOUNCE_MS = 150
+ROW_RESIZE_DEBOUNCE_MS = 150  # 구버전 호환용 (행 높이는 이제 줄 수 기준으로 계산)
 
 
 # --------------------------------------------------------------------------
@@ -238,28 +238,47 @@ class MultiLineDelegate(QStyledItemDelegate):
 
 
 class AutoHeightTable(QTableWidget):
-    """열 너비가 바뀌면(줄바꿈이 바뀌므로) 행 높이를 다시 계산해 주는 테이블.
-    드래그 중 매 픽셀마다 다시 계산하면 느려지므로 짧게 지연(debounce) 후 실행합니다."""
+    """입력된 텍스트의 실제 줄 수를 기준으로 행 높이를 정합니다.
+
+    resizeRowsToContents()를 전체 행에 대해 호출하지 않습니다. 대량 검색 결과에서
+    Qt가 모든 셀의 줄바꿈/문서 크기를 다시 계산하면서 UI가 멈추는 현상을 막고,
+    행 높이는 데이터가 들어오거나 셀이 수정될 때 필요한 행만 계산합니다.
+    사용자는 세로 헤더를 드래그해서 원하는 높이로 직접 조절할 수 있습니다.
+    """
+
+    BASE_ROW_HEIGHT = 28
+    LINE_HEIGHT = 20
+    MAX_AUTO_HEIGHT = 260
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._resize_timer = QTimer(self)
-        self._resize_timer.setSingleShot(True)
-        # 전체 행을 한꺼번에 resizeRowsToContents() 하면 통화기록이 많을 때
-        # 검색 직후 UI가 수 초~수십 초 동안 "응답 없음"처럼 보일 수 있습니다.
-        # 실제로 화면에 보이는 행만 계산하도록 변경합니다.
-        self._resize_timer.timeout.connect(self._resize_visible_rows)
-        self.horizontalHeader().sectionResized.connect(self._on_section_resized)
-        self.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+        # 행 높이는 자동 ResizeToContents가 아니라 Interactive로 둡니다.
+        # 사용자가 직접 드래그해서 조절할 수 있습니다.
+        self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.verticalHeader().setMinimumSectionSize(self.BASE_ROW_HEIGHT)
 
-    def _on_section_resized(self, *_args):
-        self._resize_timer.start(ROW_RESIZE_DEBOUNCE_MS)
+    @staticmethod
+    def _line_count(text):
+        text = str(text or "")
+        if not text:
+            return 1
+        # 실제 입력 줄 수만 사용합니다. 화면 폭에 따른 자동 줄바꿈은 계산하지 않아
+        # 검색 결과가 많을 때 QTextDocument 계산으로 느려지는 것을 막습니다.
+        return max(1, text.count("\n") + 1)
 
-    def _on_scroll_changed(self, *_args):
-        # 스크롤해서 새 행이 화면에 들어왔을 때만 높이를 계산합니다.
-        self._resize_timer.start(60)
+    def row_height_from_items(self, row):
+        max_lines = 1
+        for col in range(self.columnCount()):
+            item = self.item(row, col)
+            if item:
+                max_lines = max(max_lines, self._line_count(item.text()))
+        return min(self.MAX_AUTO_HEIGHT, self.BASE_ROW_HEIGHT + (max_lines - 1) * self.LINE_HEIGHT)
 
-    def _resize_visible_rows(self):
+    def resize_row_from_text(self, row):
+        if 0 <= row < self.rowCount():
+            self.setRowHeight(row, self.row_height_from_items(row))
+
+    def resize_visible_rows_from_text(self):
         if self.rowCount() <= 0:
             return
         viewport = self.viewport()
@@ -268,15 +287,15 @@ class AutoHeightTable(QTableWidget):
         if top < 0:
             top = 0
         if bottom < 0:
-            bottom = self.rowCount() - 1
-        # 화면 위아래 여유 행을 조금 포함해 스크롤이 자연스럽게 보이도록 합니다.
+            bottom = min(self.rowCount() - 1, top + 30)
         top = max(0, top - 2)
         bottom = min(self.rowCount() - 1, bottom + 2)
         for row in range(top, bottom + 1):
-            self.resizeRowToContents(row)
+            self.resize_row_from_text(row)
 
     def schedule_row_resize(self, delay=0):
-        self._resize_timer.start(delay)
+        # 호환용 메서드. 전체 행을 다시 계산하지 않고 현재 보이는 행만 계산합니다.
+        QTimer.singleShot(delay, self.resize_visible_rows_from_text)
 
 
 # --------------------------------------------------------------------------
@@ -814,7 +833,6 @@ class CallManagerLite(QMainWindow):
         table.setShowGrid(False)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         table.verticalHeader().setVisible(False)
         table.horizontalHeader().setStretchLastSection(True)
         return table
@@ -1048,6 +1066,8 @@ class CallManagerLite(QMainWindow):
                     c["type"] = self.call_table.item(row, 3).text() if self.call_table.item(row, 3) else ""
                     c["content"] = self.call_table.item(row, 4).text() if self.call_table.item(row, 4) else ""
                     break
+            # 편집한 내용의 줄 수가 바뀌면 해당 행만 다시 높이를 계산합니다.
+            self.call_table.resize_row_from_text(row)
             self.request_save_data()
         except Exception as e:
             self.show_nonfatal_error("통화 기록 수정 오류", e)
@@ -1090,11 +1110,10 @@ class CallManagerLite(QMainWindow):
         layout.addLayout(btn_row)
 
         def save_client():
+            # 거래처명은 비워둔 채로도 등록할 수 있었던 기존 동작을 유지합니다.
+            # 이름이 입력된 경우에만 동일 이름 중복을 검사합니다.
             name = name_input.text().strip()
-            if not name:
-                QMessageBox.warning(dialog, "거래처 확인", "거래처명을 입력해 주세요.")
-                return
-            if name in self.data.get("clients", {}):
+            if name and name in self.data.get("clients", {}):
                 QMessageBox.warning(dialog, "거래처 확인", "이미 등록된 거래처명입니다.")
                 return
             self.data.setdefault("clients", {})[name] = [
@@ -1141,6 +1160,7 @@ class CallManagerLite(QMainWindow):
                 self.client_table.item(row, i).text() if self.client_table.item(row, i) else ""
                 for i in range(1, 5)
             ]
+            self.client_table.resize_row_from_text(row)
             self.request_save_data()
         except Exception as e:
             self.show_nonfatal_error("거래처 수정 오류", e)
@@ -1277,8 +1297,8 @@ class CallManagerLite(QMainWindow):
             self.call_table.setItem(i, 4, item)
         self.call_table.setSortingEnabled(True)
         self.call_table.blockSignals(False)
-        # 대량 데이터에서도 화면이 멈추지 않도록, 행 높이 계산은 다음 이벤트 루프에서 실행
-        self.call_table.schedule_row_resize(60)
+        # 입력된 줄 수를 기준으로 현재 보이는 행만 높이를 정합니다.
+        self.call_table.schedule_row_resize(0)
 
     def update_client_table(self, data):
         self.client_table.blockSignals(True)
@@ -1293,7 +1313,7 @@ class CallManagerLite(QMainWindow):
                 self.client_table.setItem(i, j + 1, item)
         self.client_table.setSortingEnabled(True)
         self.client_table.blockSignals(False)
-        self.client_table.schedule_row_resize()
+        self.client_table.schedule_row_resize(0)
 
     def schedule_filter_calls(self, *_args):
         """날짜 변경 등 빠르게 연속 발생하는 신호를 합쳐 한 번만 검색합니다."""
@@ -1592,7 +1612,7 @@ class CallManagerLite(QMainWindow):
             for i, w in enumerate(self.settings["client_widths"][:len(self.CLIENT_HEADERS)]):
                 self.client_table.setColumnWidth(i, w)
         self.call_table.schedule_row_resize()
-        self.client_table.schedule_row_resize()
+        self.client_table.schedule_row_resize(0)
 
     def reset_widths(self):
         for i in range(len(self.CALL_HEADERS)):
