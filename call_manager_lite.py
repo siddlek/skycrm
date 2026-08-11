@@ -245,11 +245,35 @@ class AutoHeightTable(QTableWidget):
         super().__init__(*args, **kwargs)
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
-        self._resize_timer.timeout.connect(self.resizeRowsToContents)
+        # 전체 행을 한꺼번에 resizeRowsToContents() 하면 통화기록이 많을 때
+        # 검색 직후 UI가 수 초~수십 초 동안 "응답 없음"처럼 보일 수 있습니다.
+        # 실제로 화면에 보이는 행만 계산하도록 변경합니다.
+        self._resize_timer.timeout.connect(self._resize_visible_rows)
         self.horizontalHeader().sectionResized.connect(self._on_section_resized)
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
 
     def _on_section_resized(self, *_args):
         self._resize_timer.start(ROW_RESIZE_DEBOUNCE_MS)
+
+    def _on_scroll_changed(self, *_args):
+        # 스크롤해서 새 행이 화면에 들어왔을 때만 높이를 계산합니다.
+        self._resize_timer.start(60)
+
+    def _resize_visible_rows(self):
+        if self.rowCount() <= 0:
+            return
+        viewport = self.viewport()
+        top = self.indexAt(viewport.rect().topLeft()).row()
+        bottom = self.indexAt(viewport.rect().bottomLeft()).row()
+        if top < 0:
+            top = 0
+        if bottom < 0:
+            bottom = self.rowCount() - 1
+        # 화면 위아래 여유 행을 조금 포함해 스크롤이 자연스럽게 보이도록 합니다.
+        top = max(0, top - 2)
+        bottom = min(self.rowCount() - 1, bottom + 2)
+        for row in range(top, bottom + 1):
+            self.resizeRowToContents(row)
 
     def schedule_row_resize(self, delay=0):
         self._resize_timer.start(delay)
@@ -428,6 +452,18 @@ class CallManagerLite(QMainWindow):
         self.table_filter_headers = {}
         self.closing_app = False
         self.pending_ftp_sync = False
+
+        # 검색은 입력/날짜 변경 신호가 짧은 시간에 여러 번 발생할 수 있으므로
+        # 마지막 변경 후 한 번만 실제 필터를 실행합니다.
+        self.main_search_timer = QTimer(self)
+        self.main_search_timer.setSingleShot(True)
+        self.main_search_timer.setInterval(120)
+        self.main_search_timer.timeout.connect(self.filter_calls)
+
+        self.client_search_timer = QTimer(self)
+        self.client_search_timer.setSingleShot(True)
+        self.client_search_timer.setInterval(120)
+        self.client_search_timer.timeout.connect(self.filter_clients)
 
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
@@ -844,18 +880,18 @@ class CallManagerLite(QMainWindow):
         self.main_start_date.setCalendarPopup(True)
         self.main_start_date.setDisplayFormat("yyyy-MM-dd")
         self.main_start_date.setDate(QDate.currentDate().addMonths(-1))
-        self.main_start_date.dateChanged.connect(self.filter_calls)
+        self.main_start_date.dateChanged.connect(self.schedule_filter_calls)
 
         self.main_end_date = QDateEdit()
         self.main_end_date.setCalendarPopup(True)
         self.main_end_date.setDisplayFormat("yyyy-MM-dd")
         self.main_end_date.setDate(QDate.currentDate())
-        self.main_end_date.dateChanged.connect(self.filter_calls)
+        self.main_end_date.dateChanged.connect(self.schedule_filter_calls)
 
         self.main_search_input = QLineEdit()
         self.main_search_input.setPlaceholderText("검색어...")
         self.main_search_input.returnPressed.connect(self.filter_calls)
-        self.main_search_input.textChanged.connect(self.filter_calls_when_cleared)
+        self.main_search_input.textChanged.connect(self.schedule_filter_calls_when_cleared)
 
         main_search_btn = QPushButton("검색")
         main_search_btn.setObjectName("PrimaryButton")
@@ -886,7 +922,7 @@ class CallManagerLite(QMainWindow):
         c_search_layout = QHBoxLayout()
         self.client_search_input = QLineEdit()
         self.client_search_input.setPlaceholderText("거래처 검색...")
-        self.client_search_input.textChanged.connect(self.filter_clients)
+        self.client_search_input.textChanged.connect(self.schedule_filter_clients)
         self.client_search_input.returnPressed.connect(self.filter_clients)
         c_search_layout.addWidget(QLabel("거래처 검색: "))
         c_search_layout.addWidget(self.client_search_input)
@@ -1160,7 +1196,7 @@ class CallManagerLite(QMainWindow):
 
         def apply_sub_filter(*_args):
             try:
-                kw = p_input.text().lower().strip()
+                kw = p_input.text().casefold().strip()
                 s_qdate = p_start.date()
                 e_qdate = p_end.date()
                 if not s_qdate.isValid() or not e_qdate.isValid():
@@ -1169,31 +1205,36 @@ class CallManagerLite(QMainWindow):
                 e_d = e_qdate.toPyDate()
                 if e_d < s_d:
                     s_d, e_d = e_d, s_d
-                p_table.blockSignals(True)
-                p_table.setSortingEnabled(False)
-                p_table.setRowCount(0)
+
+                matched_calls = []
                 for c in all_calls:
                     try:
-                        c_date = datetime.strptime(c.get("date", ""), "%Y-%m-%d %H:%M:%S").date()
-                        phone = str(c.get("phone", "")).lower()
-                        content = str(c.get("content", "")).lower()
-                        call_type = str(c.get("type", "")).lower()
-                        if (s_d <= c_date <= e_d) and (not kw or kw in content or kw in phone or kw in call_type):
-                            curr = p_table.rowCount()
-                            p_table.insertRow(curr)
-                            p_table.setItem(curr, 0, QTableWidgetItem(str(c.get("date", ""))))
-                            p_table.setItem(curr, 1, QTableWidgetItem(str(c.get("phone", ""))))
-                            p_table.setItem(curr, 2, QTableWidgetItem(str(c.get("type", ""))))
-                            content_item = QTableWidgetItem(str(c.get("content", "")))
-                            content_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-                            p_table.setItem(curr, 3, content_item)
-                    except Exception:
+                        c_date = datetime.strptime(str(c.get("date", "")), "%Y-%m-%d %H:%M:%S").date()
+                    except (TypeError, ValueError):
                         continue
+                    phone = str(c.get("phone", "")).casefold()
+                    content = str(c.get("content", "")).casefold()
+                    call_type = str(c.get("type", "")).casefold()
+                    if s_d <= c_date <= e_d and (not kw or kw in content or kw in phone or kw in call_type):
+                        matched_calls.append(c)
+
+                # insertRow()를 반복하지 않고 한 번에 행 수를 잡은 뒤 채웁니다.
+                p_table.blockSignals(True)
+                p_table.setSortingEnabled(False)
+                p_table.setRowCount(len(matched_calls))
+                for row, c in enumerate(matched_calls):
+                    p_table.setItem(row, 0, QTableWidgetItem(str(c.get("date", ""))))
+                    p_table.setItem(row, 1, QTableWidgetItem(str(c.get("phone", ""))))
+                    p_table.setItem(row, 2, QTableWidgetItem(str(c.get("type", ""))))
+                    content_item = QTableWidgetItem(str(c.get("content", "")))
+                    content_item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                    p_table.setItem(row, 3, content_item)
                 p_table.setSortingEnabled(True)
                 p_table.blockSignals(False)
-                p_table.schedule_row_resize()
+                p_table.schedule_row_resize(60)
             except Exception as e:
-                self.show_nonfatal_error("검색 필터 오류", e)
+                self.statusBar().showMessage(f"상세 검색 중 오류: {e}", 5000)
+                traceback.print_exc()
 
         p_input.returnPressed.connect(apply_sub_filter)
         p_input.textChanged.connect(lambda: apply_sub_filter() if not p_input.text().strip() else None)
@@ -1237,7 +1278,7 @@ class CallManagerLite(QMainWindow):
         self.call_table.setSortingEnabled(True)
         self.call_table.blockSignals(False)
         # 대량 데이터에서도 화면이 멈추지 않도록, 행 높이 계산은 다음 이벤트 루프에서 실행
-        self.call_table.schedule_row_resize()
+        self.call_table.schedule_row_resize(60)
 
     def update_client_table(self, data):
         self.client_table.blockSignals(True)
@@ -1254,23 +1295,23 @@ class CallManagerLite(QMainWindow):
         self.client_table.blockSignals(False)
         self.client_table.schedule_row_resize()
 
-    def filter_calls_when_cleared(self):
+    def schedule_filter_calls(self, *_args):
+        """날짜 변경 등 빠르게 연속 발생하는 신호를 합쳐 한 번만 검색합니다."""
+        self.main_search_timer.start()
+
+    def schedule_filter_calls_when_cleared(self, *_args):
+        # 검색어를 지웠을 때에는 바로 전체 결과를 복원하되, 입력 이벤트가
+        # 연속으로 발생하는 경우에는 debounce를 적용합니다.
         if not self.main_search_input.text().strip():
-            self.filter_calls()
+            self.main_search_timer.start()
 
     def filter_calls(self, *_args):
-        # *_args: QDateEdit.dateChanged(QDate)나 QPushButton.clicked(bool)처럼
-        # 신호가 추가 인자를 넘겨줘도 안전하게 무시하기 위함입니다.
+        """통화기록 필터. 화면 갱신은 한 번만 수행하고 데이터 자체는 절대 변경하지 않습니다."""
         try:
-            kw = self.main_search_input.text().lower().strip()
+            kw = self.main_search_input.text().casefold().strip()
 
             start_qdate = self.main_start_date.date()
             end_qdate = self.main_end_date.date()
-            # 사용자가 날짜 칸에 직접 숫자를 입력하는 도중에는 QDate가 일시적으로
-            # 비어있거나(0000-00-00 등) 유효하지 않은 상태가 될 수 있습니다.
-            # 이때 곧바로 toPyDate()를 부르면 예외가 발생해서 프로그램 전체가
-            # 꺼져버렸던 것이 날짜 관련 오류의 실제 원인이었습니다.
-            # -> 날짜가 아직 유효하지 않으면 이번 갱신은 조용히 건너뜁니다.
             if not start_qdate.isValid() or not end_qdate.isValid():
                 return
 
@@ -1279,40 +1320,80 @@ class CallManagerLite(QMainWindow):
             if end < start:
                 start, end = end, start
 
+            # 검색 중에는 화면을 여러 번 갱신하지 않고 결과를 먼저 메모리에 만듭니다.
             filtered = []
-            for c in self.data["calls"]:
-                try:
-                    c_date = datetime.strptime(c.get("date", ""), "%Y-%m-%d %H:%M:%S").date()
-                except Exception:
-                    continue
-                name = str(c.get("name", "")).lower()
-                content = str(c.get("content", "")).lower()
-                phone = str(c.get("phone", "")).lower()
-                call_type = str(c.get("type", "")).lower()
-                basic_match = not kw or kw in name or kw in content or kw in phone or kw in call_type
-                column_match = all(
-                    str(filter_text).lower() in self.call_value_by_column(c, col)
-                    for col, filter_text in self.call_column_filters.items()
-                )
-                if (start <= c_date <= end) and basic_match and column_match:
-                    filtered.append(c)
-            self.update_call_table(filtered)
-        except Exception as e:
-            # 예상치 못한 오류가 나더라도 프로그램이 꺼지지 않고, 알림만 뜨도록 합니다.
-            self.show_nonfatal_error("검색 필터 오류", e)
+            column_filters = dict(self.call_column_filters)
 
-    def filter_clients(self):
-        kw = self.client_search_input.text().lower().strip()
-        filtered = {}
-        for name, details in self.data["clients"].items():
-            basic_match = not kw or kw in name.lower() or any(kw in str(val).lower() for val in details)
-            column_match = all(
-                str(filter_text).lower() in self.client_value_by_column(name, details, col)
-                for col, filter_text in self.client_column_filters.items()
-            )
-            if basic_match and column_match:
+            for c in self.data.get("calls", []):
+                try:
+                    c_date = datetime.strptime(str(c.get("date", "")), "%Y-%m-%d %H:%M:%S").date()
+                except (TypeError, ValueError):
+                    # 날짜가 잘못된 오래된 기록 하나 때문에 전체 검색이 중단되지 않게 합니다.
+                    continue
+
+                if c_date < start or c_date > end:
+                    continue
+
+                name = str(c.get("name", "")).casefold()
+                content = str(c.get("content", "")).casefold()
+                phone = str(c.get("phone", "")).casefold()
+                call_type = str(c.get("type", "")).casefold()
+                if kw and not (kw in name or kw in content or kw in phone or kw in call_type):
+                    continue
+
+                if column_filters:
+                    matched = True
+                    for col, filter_text in column_filters.items():
+                        if str(filter_text).casefold() not in self.call_value_by_column(c, col):
+                            matched = False
+                            break
+                    if not matched:
+                        continue
+
+                filtered.append(c)
+
+            self.update_call_table(filtered)
+            self.statusBar().showMessage(f"검색 결과 {len(filtered):,}건", 1500)
+        except Exception as e:
+            # 검색은 반복 실행되는 작업이라 오류창을 띄우면 UI가 더 멈출 수 있습니다.
+            # 상태표시줄에만 알리고 프로그램은 계속 사용할 수 있게 합니다.
+            self.statusBar().showMessage(f"검색 중 오류: {e}", 5000)
+            traceback.print_exc()
+
+    def schedule_filter_clients(self, *_args):
+        self.client_search_timer.start()
+
+    def filter_clients(self, *_args):
+        try:
+            kw = self.client_search_input.text().casefold().strip()
+            filtered = {}
+            column_filters = dict(self.client_column_filters)
+
+            for name, details in self.data.get("clients", {}).items():
+                name_text = str(name)
+                basic_match = (
+                    not kw
+                    or kw in name_text.casefold()
+                    or any(kw in str(val).casefold() for val in details)
+                )
+                if not basic_match:
+                    continue
+
+                if column_filters:
+                    matched = True
+                    for col, filter_text in column_filters.items():
+                        if str(filter_text).casefold() not in self.client_value_by_column(name, details, col):
+                            matched = False
+                            break
+                    if not matched:
+                        continue
+
                 filtered[name] = details
-        self.update_client_table(filtered)
+
+            self.update_client_table(filtered)
+        except Exception as e:
+            self.statusBar().showMessage(f"거래처 검색 중 오류: {e}", 5000)
+            traceback.print_exc()
 
     def call_value_by_column(self, c, col):
         values = [
