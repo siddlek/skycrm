@@ -48,4 +48,4 @@ const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBA
   assert.equal(bytes,'EXE attachment bytes');assert.deepEqual(errors,[]);
   console.log('PASS Windows packaged EXE: offline app, isolated renderer, all tabs, memo/image/attachment persistence across a full process restart');
  }finally{if(app)await app.close();fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:300});}
-})().catch(error=>{console.error(error);process.exitCode=1;});
+})().catch(error=>{console.error(error);console.error('::error::'+String(error.stack||error).replaceAll('%','%25').replaceAll('\r','%0D').replaceAll('\n','%0A'));process.exitCode=1;});
