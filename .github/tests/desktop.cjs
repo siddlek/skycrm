@@ -28,6 +28,10 @@ const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBA
   await page.evaluate(png=>{const d=new DataTransfer();d.items.add(new File([Uint8Array.from(atob(png),c=>c.charCodeAt(0))],'이미지.png',{type:'image/png'}));document.querySelector('#memo-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:d}));},png);
   await page.waitForFunction(()=>document.querySelector('.skycrm-local-image')?.dataset.assetLoaded==='true');
   await page.locator('.skycrm-local-image').click();await page.locator('#memo-image-width').fill('120');await page.locator('#memo-image-width').press('Enter');
+  await page.locator('#memo-content').focus();await page.keyboard.press('Control+z');
+  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')).memos[0].pages[0].delta.ops.find(op=>op.insert?.localImage).insert.localImage.width),undefined);
+  await page.keyboard.press('Control+y');
+  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')).memos[0].pages[0].delta.ops.find(op=>op.insert?.localImage).insert.localImage.width),120);
   await page.locator('#attachment-input').setInputFiles({name:'첨부.txt',mimeType:'text/plain',buffer:Buffer.from('EXE attachment bytes')});
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')).memos[0].pages[0].attachments.length===1);
   const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')));

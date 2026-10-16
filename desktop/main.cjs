@@ -24,7 +24,7 @@ else {
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
    {label:'파일',submenu:[{label:'데이터 저장 폴더 열기',click:()=>shell.openPath(app.getPath('userData'))},{type:'separator'},{role:'quit',label:'종료'}]},
-   {label:'편집',submenu:[{role:'undo',label:'실행 취소'},{role:'redo',label:'다시 실행'},{type:'separator'},{role:'cut',label:'잘라내기'},{role:'copy',label:'복사'},{role:'paste',label:'붙여넣기'},{role:'selectAll',label:'모두 선택'}]},
+   {label:'편집',submenu:[{label:'실행 취소',click:()=>window.webContents.executeJavaScript("if(document.activeElement?.closest('#memo-content')) tool('undo'); else document.execCommand('undo');")},{label:'다시 실행',click:()=>window.webContents.executeJavaScript("if(document.activeElement?.closest('#memo-content')) tool('redo'); else document.execCommand('redo');")},{type:'separator'},{role:'cut',label:'잘라내기'},{role:'copy',label:'복사'},{role:'paste',label:'붙여넣기'},{role:'selectAll',label:'모두 선택'}]},
    {label:'보기',submenu:[{role:'resetZoom',label:'원래 크기'},{role:'zoomIn',label:'확대'},{role:'zoomOut',label:'축소'},{role:'togglefullscreen',label:'전체 화면'}]}
   ]));
   window=new BrowserWindow({width:1440,height:1000,minWidth:850,minHeight:650,show:false,title:'Sky CRM',backgroundColor:'#f8f7f4',webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true,spellcheck:false}});
