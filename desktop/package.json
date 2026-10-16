@@ -1,6 +1,6 @@
 {
   "name": "skycrm-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Sky CRM Windows desktop app",
   "author": "siddlek",
@@ -18,13 +18,30 @@
     "appId": "com.skycrm.desktop",
     "productName": "SkyCRM",
     "asar": true,
-    "directories": { "output": "out" },
-    "files": ["main.cjs", "assets/**/*"],
+    "directories": {
+      "output": "out"
+    },
+    "files": [
+      "*.cjs",
+      "assets/**/*"
+    ],
     "win": {
-      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "artifactName": "SkyCRM-${version}-Windows-x64.${ext}",
       "signAndEditExecutable": false
     },
-    "portable": { "requestExecutionLevel": "user" }
+    "portable": {
+      "requestExecutionLevel": "user"
+    }
+  },
+  "dependencies": {
+    "basic-ftp": "6.2.3"
   }
 }

@@ -1,11 +1,18 @@
 'use strict';
 // Keep the original storage key. Old single-page memos become the first page.
-state.folders = Array.isArray(state.folders) ? state.folders : [];
-state.ui = state.ui && typeof state.ui === 'object' ? state.ui : {};
 const memoNow = () => new Date().toISOString();
 const memoTime = value => { const date = new Date(value); return Number.isNaN(date.getTime()) ? memoNow() : date.toISOString(); };
 const memoById = id => state.memos.find(m => m.id === id);
 const folderById = id => state.folders.find(f => f.id === id);
+function cleanParentLinks(items, lookup) {
+  for (const item of items) {
+    const seen = new Set([item.id]); let parent = item.parent;
+    while (parent) { const ancestor = lookup(parent); if (!ancestor || seen.has(parent)) { item.parent = ''; break; } seen.add(parent); parent = ancestor.parent || ''; }
+  }
+}
+function normalizeMemos(){
+state.folders = Array.isArray(state.folders) ? state.folders : [];
+state.ui = state.ui && typeof state.ui === 'object' ? state.ui : {};
 for (const item of state.memos) {
   item.parent = typeof item.parent === 'string' ? item.parent : '';
   item.folderId = typeof item.folderId === 'string' ? item.folderId : '';
@@ -18,14 +25,10 @@ for (const item of state.memos) {
   if (item.kind === 'task' || !folderById(item.folderId)) item.folderId = '';
 }
 for (const f of state.folders) { f.parent ||= ''; f.createdAt = memoTime(f.createdAt); f.updatedAt = memoTime(f.updatedAt || f.createdAt); }
-function cleanParentLinks(items, lookup) {
-  for (const item of items) {
-    const seen = new Set([item.id]); let parent = item.parent;
-    while (parent) { const ancestor = lookup(parent); if (!ancestor || seen.has(parent)) { item.parent = ''; break; } seen.add(parent); parent = ancestor.parent || ''; }
-  }
-}
 cleanParentLinks(state.memos.filter(m => m.kind === 'task'), id => state.memos.find(m => m.id === id && m.kind === 'task'));
 cleanParentLinks(state.folders, folderById);
+}
+normalizeMemos();
 let selectedFolder = '', history = [], historyIndex = -1, dragItem = null, menuContext = null, renameAction = null;
 const activeMemo = () => memoById(memoId);
 const activePage = item => item?.pages.find(p => p.id === item.activePageId);
