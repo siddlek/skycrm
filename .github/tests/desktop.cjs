@@ -13,7 +13,7 @@ const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBA
  try{
   const launch=async()=>{
    app=await _electron.launch({executablePath:executable,env:{...process.env,SKYCRM_TEST_USER_DATA:profile},timeout:60000});
-   const window=await app.firstWindow();await window.waitForLoadState('load');
+   const window=await app.firstWindow();await window.waitForURL('skycrm://app/index.html');await window.waitForLoadState('load');
    assert.equal(new URL(window.url()).protocol,'skycrm:');
    assert.ok(await window.locator('footer').innerText().then(t=>t.includes('Windows 버전')));
    assert.deepEqual(await app.evaluate(({BrowserWindow})=>{const w=BrowserWindow.getAllWindows()[0],p=w.webContents.getLastWebPreferences();return {nodeIntegration:p.nodeIntegration,contextIsolation:p.contextIsolation,sandbox:p.sandbox};}),{nodeIntegration:false,contextIsolation:true,sandbox:true});
