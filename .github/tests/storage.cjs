@@ -11,6 +11,8 @@ const payload=()=>format.decode(JSON.stringify(legacy));
   const encoded=format.encode(decoded,decoded.raw);assert.deepEqual(JSON.parse(JSON.stringify(encoded.clients)),legacy.clients);assert.deepEqual(encoded.unrelated,legacy.unrelated);assert.equal(encoded.calls[0].date,legacy.calls[0].date);assert.throws(()=>format.decode('{"clients":{}}'));assert.throws(()=>format.decode('{"clients":{"오류":5},"calls":[]}'));
   const image={id:'file-image',name:'원본.png',kind:'image',type:'image/png',size:3,data:Buffer.from([0,128,255]).toString('base64')};
   const bundle=payload();bundle.assets=[image];bundle.state.memos[0].pages=[{id:'page',name:'서식 탭',content:'굵은 글자',delta:{ops:[{insert:'굵은 글자',attributes:{bold:true}},{insert:{localImage:{id:image.id,name:image.name,width:260}}},{insert:'\n'}]},assetIds:[image.id],attachments:[]}];
+  const large=Buffer.alloc(6*1024*1024,0x42),largeAsset={...image,id:'large-file',kind:'file',name:'큰 첨부.bin',type:'application/octet-stream',size:large.length,data:large.toString('base64')};
+  const big=payload();big.assets=[largeAsset];big.state.memos[0].pages=[{id:'big-page',name:'새 탭',content:'',attachments:[{id:largeAsset.id,name:largeAsset.name,size:largeAsset.size}]}];assert.equal(Buffer.from(format.decode(format.encode(big,legacy)).assets[0].data,'base64').compare(large),0);
   assert.deepEqual(format.decode(format.encode(bundle,legacy)).assets,[image]);assert.throws(()=>format.encode({...bundle,assets:[]},legacy),/원본/);
   const local=path.join(root,'local'),store=new Storage(local);await store.init();assert.equal((await store.startup()).bundle,null);
   for(let i=0;i<5;i++){bundle.state.calls[0].content='저장 '+i;await store.save(bundle,{manual:true});}

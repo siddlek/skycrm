@@ -15,7 +15,7 @@ function validateAssets(state,assets){
  if(!Array.isArray(assets))error('첨부파일 백업 형식이 올바르지 않습니다.');
  const ids=new Set();
  for(const a of assets){
-  if(!object(a)||!(/^[\w.-]{1,120}$/).test(a.id)||ids.has(a.id)||typeof a.data!=='string'||a.data.length>72*1024*1024||!(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/).test(a.data))error('첨부파일 백업이 손상되었습니다.');
+  if(!object(a)||!(/^[\w.-]{1,120}$/).test(a.id)||ids.has(a.id)||typeof a.data!=='string'||a.data.length>72*1024*1024||(a.data.length%4!==0||/[^A-Za-z0-9+/]/.test(a.data.replace(/={1,2}$/, ''))))error('첨부파일 백업이 손상되었습니다.');
   if(Buffer.from(a.data,'base64').length!==a.size)error('첨부파일 크기가 백업 정보와 다릅니다.');ids.add(a.id);
  }
  for(const id of assetReferences(state))if(!ids.has(id))error('본문 이미지 또는 첨부파일 원본이 백업에 없습니다. 원본 파일을 확인하세요.');
