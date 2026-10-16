@@ -55,7 +55,7 @@ const watchdog=setTimeout(()=>{console.error('::error::Windows 검증 시간 초
   // rather than relying on the first profile's IndexedDB.
   stage='Windows 종료 시 파일 저장';await app.close();app=null;currentProfile=freshProfile;fs.mkdirSync(freshProfile);
   stage='새 프로필에 파일 열기';page=await launch();await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},path.join(profile,'call_data.json'));
-  stage='기존 JSON 파일 열기';await page.locator('[data-file-action=open]').click();await page.waitForFunction(()=>state.memos.some(m=>m.name==='EXE 저장 테스트')&&!document.querySelector('#desktop-files').hasAttribute('aria-busy'));
+  stage='기존 JSON 파일 열기';await app.evaluate(({Menu},label)=>Menu.getApplicationMenu().items[0].submenu.items.find(item=>item.label===label).click(),'다른 데이터 파일 열기…');await page.waitForFunction(()=>state.memos.some(m=>m.name==='EXE 저장 테스트')&&document.documentElement.dataset.desktopBusy!=='true');
   await page.locator('[data-tab=memos]').click();await page.locator(`[data-memo-edit="${saved.memos[0].id}"]`).click();await page.waitForFunction(()=>document.querySelector('.skycrm-local-image')?.dataset.assetLoaded==='true');
   const importedBytes=await page.evaluate(async()=>{const page=activePage(activeMemo()),record=await getAsset(page.attachments[0].id);return record.blob.text();});assert.equal(importedBytes,'EXE attachment bytes');
   assert.equal(await page.locator('.skycrm-local-image').evaluate(e=>e.style.width),'120px');

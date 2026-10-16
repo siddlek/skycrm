@@ -1,14 +1,14 @@
 'use strict';
 (async()=>{
  const bridge=window.skycrmDesktop;if(!bridge)return;
- const bar=document.createElement('section');bar.id='desktop-files';bar.setAttribute('aria-label','데이터 파일 및 백업');
- bar.innerHTML='<div class="desktop-file-actions"><button data-file-action="open">파일 열기</button><button data-file-action="save">저장</button><button data-file-action="save-as">다른 이름으로 저장</button><button data-file-action="backups">백업 복구 (3개)</button><button data-file-action="ftp-open">FTP에서 불러오기</button><button data-file-action="sync">FTP 동기화</button><button data-file-action="settings">환경설정</button></div><p id="desktop-file-status" role="status">데이터 파일 확인 중…</p>';
- document.querySelector('nav').after(bar);
+ const statusbar=document.createElement('div');statusbar.id='desktop-statusbar';
+ const fileStatus=document.createElement('p');fileStatus.id='desktop-file-status';fileStatus.setAttribute('role','status');fileStatus.textContent='데이터 파일 확인 중…';
+ const appStatus=$('#status');appStatus.before(statusbar);statusbar.append(appStatus,fileStatus);
  const modal=document.createElement('dialog');modal.id='desktop-dialog';document.body.append(modal);
  let saving=Promise.resolve();
  let ready=false,busy=false,dirty=false,revision=0,timer=null,syncTimer=null,status=null;
  const call=(command,payload)=>bridge.call(command,payload);
- function showStatus(value){if(value)status=value;const node=$('#desktop-file-status');if(!status)return;node.textContent=(status.preview?'복구 미리보기 · Ctrl+S로 현재 파일에 저장 · ':'')+status.path+(status.settings.type==='local'?' · PC 자동 저장':status.unsynced?' · PC 저장됨 / FTP 동기화 대기':' · FTP 사용');}
+ function showStatus(value){if(value)status=value;const node=$('#desktop-file-status');if(!status)return;node.textContent=(status.preview?'복구 미리보기 · Ctrl+S로 현재 파일에 저장 · ':'')+status.path+(status.settings.type==='local'?' · PC 자동 저장':status.unsynced?' · PC 저장됨 / FTP 동기화 대기':' · FTP 사용');node.title=node.textContent;}
  function fail(error){$('#desktop-file-status').textContent='오류: '+error.message;alert(error.message);}
  function schedule(){clearTimeout(timer);if(ready&&dirty&&!busy&&!status?.preview)timer=setTimeout(()=>flush(false,false).catch(error=>{$('#desktop-file-status').textContent='저장 실패: '+error.message;}),2000);}
  function configureTimer(){clearInterval(syncTimer);if(status?.settings.type!=='local')syncTimer=setInterval(()=>{if(!busy&&!modal.open&&ready&&!status?.preview)flush(true,false).catch(error=>{$('#desktop-file-status').textContent='FTP 동기화 실패 · PC 저장본 유지: '+error.message;});},(status?.settings.autosave_minutes||5)*60000);}
@@ -64,7 +64,7 @@
   $('#desktop-import-settings').onclick=()=>run(async()=>{const imported=await call('importSettings');if(imported){modal.close();await preferences(imported);}});
   form.onsubmit=e=>{e.preventDefault();run(async()=>{await beforeSwitch();const result=await call('configure',values());modal.close();if(result.bundle)await install(result.bundle);else{showStatus(result.status);ready=true;dirty=true;configureTimer();schedule();}});};
  }
- async function run(action){if(busy)return;busy=true;bar.setAttribute('aria-busy','true');bar.querySelectorAll('button').forEach(b=>b.disabled=true);try{await action();}catch(error){fail(error);}finally{busy=false;bar.removeAttribute('aria-busy');bar.querySelectorAll('button').forEach(b=>b.disabled=false);schedule();}}
+ async function run(action){if(busy)return;busy=true;document.documentElement.dataset.desktopBusy='true';try{await action();}catch(error){fail(error);}finally{busy=false;delete document.documentElement.dataset.desktopBusy;schedule();}}
  const actions={
   open:async()=>{await beforeSwitch();const bundle=await call('openLocal');if(bundle)await install(bundle);},
   save:()=>flush(true,true),
@@ -72,7 +72,6 @@
   backups:chooseBackup,settings:()=>preferences(),'ftp-open':ftpFiles,
   sync:async()=>{if(status?.settings.type==='local')throw new Error('환경설정에서 FTP 저장 방식을 선택하세요.');await flush(true,true);}
  };
- bar.onclick=e=>{const action=e.target.closest('[data-file-action]')?.dataset.fileAction;if(actions[action])run(actions[action]);};
  bridge.onAction(action=>{if(actions[action])run(actions[action]);});
  document.addEventListener('skycrm-persist',()=>{dirty=true;revision++;schedule();});
  document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();e.stopImmediatePropagation();run(actions[e.shiftKey?'save-as':'save']);}},true);

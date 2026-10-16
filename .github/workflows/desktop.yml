@@ -52,6 +52,8 @@ jobs:
           node .github/tests/desktop.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/tests/desktop-files.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .github/tests/desktop-autosave.cjs
       - name: Build portable EXE
         run: npm --prefix desktop run dist
       - name: Write checksum and validate Windows binary

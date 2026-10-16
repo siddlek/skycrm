@@ -231,7 +231,7 @@ function showContextMenu(e) {
   if (folder) buttons += '<hr>' + b('rename-folder','폴더 이름 수정') + b('delete-folder','폴더 삭제 (내용 보존)');
   if (page) buttons = b('new-page','새 페이지 추가') + b('rename-page','페이지 이름 수정') + b('delete-page','페이지 삭제');
   document.body.insertAdjacentHTML('beforeend', `<div id="memo-context-menu" role="menu">${buttons}</div>`);
-  const menu = $('#memo-context-menu'); menu.style.left = Math.min(e.clientX, innerWidth - menu.offsetWidth - 8) + 'px'; menu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - menu.offsetHeight - 8)) + 'px'; menu.querySelector('button').focus();
+  const menu = $('#memo-context-menu'); menu.style.left = Math.min(e.clientX, innerWidth - menu.offsetWidth - 8) + 'px'; menu.style.top = Math.max(8, Math.min(e.clientY, innerHeight - menu.offsetHeight - 8)) + 'px'; menu.querySelector('button').focus({preventScroll:true});
   menu.onclick = event => { const button = event.target.closest('[data-context]'); if (!button) return; const c = menuContext; hideContextMenu(); const item = memoById(c.id); switch (button.dataset.context) {
     case 'new-note': createMemo('note', {folderId: c.folderId}); break;
     case 'new-task': createMemo('task'); break;
