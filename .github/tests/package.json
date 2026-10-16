@@ -1,6 +1,10 @@
 {
   "name": "skycrm-browser-checks",
   "private": true,
-  "scripts": {"test": "node memos.cjs"},
-  "devDependencies": {"playwright-core": "1.64.1"}
+  "scripts": {
+    "test": "node memos.cjs && node rich-text.cjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.1"
+  }
 }
