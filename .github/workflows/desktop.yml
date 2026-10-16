@@ -1,0 +1,75 @@
+name: Build and release current Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - '.github/scripts/build-desktop.py'
+      - '.github/tests/desktop.cjs'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Bundle the current app for offline use
+        run: python .github/scripts/build-desktop.py --commit ${{ github.sha }}
+      - name: Install locked build and test dependencies
+        run: |
+          npm --prefix desktop ci
+          npm --prefix .github/tests ci
+      - name: Package Windows app
+        run: npm --prefix desktop run pack
+      - name: Test the packaged Windows executable
+        run: node .github/tests/desktop.cjs
+      - name: Build portable EXE
+        run: npm --prefix desktop run dist
+      - name: Write checksum and validate Windows binary
+        shell: pwsh
+        run: |
+          $binary = Get-ChildItem desktop/out/SkyCRM-*-Windows-x64.exe | Select-Object -First 1
+          if (-not $binary) { throw 'Portable EXE was not produced' }
+          $bytes = [System.IO.File]::ReadAllBytes($binary.FullName)
+          if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw 'Invalid Windows executable' }
+          $hash = (Get-FileHash $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($binary.Name)" | Set-Content desktop/out/SHA256SUMS.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkyCRM-current-Windows-x64
+          path: |
+            desktop/out/SkyCRM-*-Windows-x64.exe
+            desktop/out/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish downloadable executable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./desktop/package.json').version")
+          gh release create "skycrm-desktop-v${version}" \
+            "desktop/out/SkyCRM-${version}-Windows-x64.exe" \
+            desktop/out/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "Sky CRM Windows ${version}" \
+            --notes-file desktop/RELEASE-NOTES.md

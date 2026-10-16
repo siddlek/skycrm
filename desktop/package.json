@@ -1,0 +1,30 @@
+{
+  "name": "skycrm-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sky CRM Windows desktop app",
+  "author": "siddlek",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win --x64 --dir",
+    "dist": "electron-builder --win portable --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.skycrm.desktop",
+    "productName": "SkyCRM",
+    "asar": true,
+    "directories": { "output": "out" },
+    "files": ["main.cjs", "assets/**/*"],
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "artifactName": "SkyCRM-${version}-Windows-x64.${ext}",
+      "signAndEditExecutable": false
+    },
+    "portable": { "requestExecutionLevel": "user" }
+  }
+}
