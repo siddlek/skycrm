@@ -33,7 +33,7 @@ const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBA
   await page.keyboard.press('Control+y');
   assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')).memos[0].pages[0].delta.ops.find(op=>op.insert?.localImage).insert.localImage.width),120);
   await page.locator('#attachment-input').setInputFiles({name:'첨부.txt',mimeType:'text/plain',buffer:Buffer.from('EXE attachment bytes')});
-  await page.waitForFunction(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')).memos[0].pages[0].attachments.length===1);
+  await page.waitForFunction(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')).memos[0].pages[0].attachments?.length===1);
   const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('skycrm-web-preview-v1')));
   assert.equal(saved.memos[0].pages[0].delta.ops.find(op=>op.insert?.localImage).insert.localImage.width,120);
   assert.equal(await page.locator('#insert-image,#image-input').count(),0);
@@ -46,6 +46,6 @@ const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBA
   assert.equal(restored.memos[0].pages[0].delta.ops.find(op=>op.insert?.localImage).insert.localImage.width,120);
   const bytes=await page.evaluate(async id=>{const db=await new Promise((resolve,reject)=>{const r=indexedDB.open('skycrm-assets-v1');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});const row=await new Promise((resolve,reject)=>{const r=db.transaction('files').objectStore('files').get(id);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});db.close();return row.blob.text();},restored.memos[0].pages[0].attachments[0].id);
   assert.equal(bytes,'EXE attachment bytes');assert.deepEqual(errors,[]);
-  console.log('PASS Windows packaged EXE: offline app, isolated renderer, all tabs, memo/image/attachment persistence across a full process restart');
+  console.log('::notice::PASS Windows packaged EXE: offline app, isolated renderer, all tabs, memo/image/attachment persistence across a full process restart');
  }finally{if(app)await app.close();fs.rmSync(profile,{recursive:true,force:true,maxRetries:10,retryDelay:300});}
 })().catch(error=>{console.error(error);console.error('::error::'+String(error.stack||error).replaceAll('%','%25').replaceAll('\r','%0D').replaceAll('\n','%0A'));process.exitCode=1;});
