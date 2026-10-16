@@ -40,14 +40,14 @@ const assert = require('node:assert/strict');
     await page.locator('#text-weight').selectOption('900'); await page.locator('#text-size').selectOption('28px');
     await page.locator('#text-color').evaluate(el=>{el.value='#ff0000';el.dispatchEvent(new Event('input',{bubbles:true}))});
     await page.locator('#text-background').evaluate(el=>{el.value='#00ff00';el.dispatchEvent(new Event('input',{bubbles:true}))});
-    const slider=await page.locator('#background-opacity').boundingBox(); await page.mouse.click(slider.x+slider.width/2,slider.y+slider.height/2);
-    let format = await page.evaluate(()=>richEditor.getFormat(7,6)); assert.equal(format.weight,'900'); assert.equal(format.size,'28px'); assert.equal(format.color,'#ff0000'); assert.match(format.background,/rgba\(0, 255, 0, 0\.5\)/);
+    assert.equal(await page.locator('#background-opacity,#opacity-value').count(),0);
+    let format = await page.evaluate(()=>richEditor.getFormat(7,6)); assert.equal(format.weight,'900'); assert.equal(format.size,'28px'); assert.equal(format.color,'#ff0000'); assert.equal(format.background,'#00ff00');
     const plain = await page.evaluate(()=>richEditor.getFormat(0,6)); assert.ok(!plain.weight&&!plain.size&&!plain.color&&!plain.background); const suffix=await page.evaluate(()=>richEditor.getFormat(14,5)); assert.ok(!suffix.weight&&!suffix.size&&!suffix.color&&!suffix.background);
     assert.equal(await page.evaluate(()=>readRichText()),legacyText);
     // Saved formatting survives page changes and reload without changing neighboring text.
     await page.locator('[data-add-page]').click(); await page.locator('#memo-content').fill('별도 페이지'); const second=(await state()).memos.find(m=>m.id==='rich-note').activePageId,first=(await state()).memos.find(m=>m.id==='rich-note').pages[0].id;
     await page.locator(`[data-page-id="${first}"]`).click(); assert.equal(await page.evaluate(()=>richEditor.getFormat(7,6).size),'28px'); await page.reload(); await page.locator('[data-tab=memos]').click(); await page.locator('[data-memo-edit=rich-note]').click();
-    assert.equal(await page.evaluate(()=>readRichText()),legacyText); assert.equal(await page.evaluate(()=>richEditor.getFormat(7,6).weight),'900'); assert.match(await page.evaluate(()=>richEditor.getFormat(7,6).background),/0\.5\)/);
+    assert.equal(await page.evaluate(()=>readRichText()),legacyText); assert.equal(await page.evaluate(()=>richEditor.getFormat(7,6).weight),'900'); assert.equal(await page.evaluate(()=>richEditor.getFormat(7,6).background),'#00ff00');
     // Replacing selected styled text retains formatting and can be undone once.
     await page.locator('#memo-content').focus(); await page.keyboard.press('Control+f'); await page.locator('#find-text').fill('SELECT'); await page.locator('#replace-text').fill('CHANGED'); await page.locator('[data-tool=replace]').click(); assert.equal(await page.evaluate(()=>readRichText()),legacyText.replace('SELECT','CHANGED')); assert.equal(await page.evaluate(()=>richEditor.getFormat(7,7).weight),'900'); await page.keyboard.press('Escape'); await page.locator('#memo-content').focus(); await page.keyboard.press('Control+z'); assert.equal(await page.evaluate(()=>readRichText()),legacyText); assert.equal(await page.evaluate(()=>richEditor.getFormat(7,6).weight),'900');
     await page.evaluate(()=>richEditor.setSelection(7,6,'user')); await page.locator('#clear-text-background').click(); assert.ok(!(await page.evaluate(()=>richEditor.getFormat(7,6))).background);
@@ -63,6 +63,6 @@ const assert = require('node:assert/strict');
       assert.ok(editor.y+editor.height<=footer.y,'rich editor does not overlap footer');
     }
     assert.deepEqual(errors,[]);
-    console.log('PASS Chromium: subtree completion/uncompletion, strict persisted filters, literal legacy text/newline preservation, mouse-selected weight/size/color/RGBA background, selection-only formatting, clear background, formatted page reload, rich replace/undo and plain-text safety');
+    console.log('PASS Chromium: subtree completion/uncompletion, strict persisted filters, literal legacy text/newline preservation, mouse-selected weight/size/color/background without opacity controls, selection-only formatting, clear background, formatted page reload, rich replace/undo and plain-text safety');
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exit(1)});

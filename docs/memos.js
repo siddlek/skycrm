@@ -117,10 +117,10 @@ function selectMemo(id) {
 }
 function renderMemoEditor() {
   const item = activeMemo(), page = activePage(item);
-  richEditor = null; richSelection = null;
-  $('#memo-editor').innerHTML = item ? `<div class="editor-title"><input id="memo-name" aria-label="메모 제목" value="${esc(item.name)}" placeholder="제목"><select id="memo-kind" aria-label="메모 종류"><option value="note" ${item.kind === 'note' ? 'selected' : ''}>일반 메모</option><option value="task" ${item.kind === 'task' ? 'selected' : ''}>할 일</option></select></div><label id="memo-phone-label" ${item.kind === 'task' ? '' : 'hidden'}>전화번호 (선택)<input id="memo-phone" value="${esc(item.phone)}"></label><div class="page-tabs" role="tablist" aria-label="메모 페이지">${item.pages.map(p => `<div class="page-tab"><button role="tab" data-page-id="${esc(p.id)}" aria-selected="${p.id === item.activePageId}"><span data-rename-page="${esc(p.id)}">${esc(p.name)}</span></button><button class="close-page" data-delete-page="${esc(p.id)}" aria-label="${esc(p.name)} 페이지 삭제">×</button></div>`).join('')}<button class="add-page" data-add-page aria-label="페이지 추가">+</button></div>${page ? `${richToolbar()}<div id="memo-rich" class="rich-editor"></div><div class="editor-meta"><span id="memo-count"></span><span>자동 저장</span></div>` : '<p class="empty">위의 +로 새 페이지를 추가하세요.</p>'}` : '<p class="empty">목록 옆 + 또는 우클릭으로 추가하세요.<br>목록의 이름을 더블클릭하면 수정할 수 있습니다.</p>';
+  richEditor = null; richSelection = null; history=[]; historyIndex=-1;
+  $('#memo-editor').innerHTML = item ? `<div class="editor-title"><input id="memo-name" aria-label="메모 제목" value="${esc(item.name)}" placeholder="제목"><select id="memo-kind" aria-label="메모 종류"><option value="note" ${item.kind === 'note' ? 'selected' : ''}>일반 메모</option><option value="task" ${item.kind === 'task' ? 'selected' : ''}>할 일</option></select></div><label id="memo-phone-label" ${item.kind === 'task' ? '' : 'hidden'}>전화번호 (선택)<input id="memo-phone" value="${esc(item.phone)}"></label><div class="page-tabs" role="tablist" aria-label="메모 페이지">${item.pages.map(p => `<div class="page-tab"><button role="tab" data-page-id="${esc(p.id)}" aria-selected="${p.id === item.activePageId}"><span data-rename-page="${esc(p.id)}">${esc(p.name)}</span></button><button class="close-page" data-delete-page="${esc(p.id)}" aria-label="${esc(p.name)} 페이지 삭제">×</button></div>`).join('')}<button class="add-page" data-add-page aria-label="페이지 추가">+</button></div>${page ? `${richToolbar()}${attachmentControls()}<div id="memo-rich" class="rich-editor"></div><div class="editor-meta"><span id="memo-count"></span><span>자동 저장</span></div><section id="page-attachments" aria-label="페이지 첨부파일"></section>` : '<p class="empty">위의 +로 새 페이지를 추가하세요.</p>'}` : '<p class="empty">목록 옆 + 또는 우클릭으로 추가하세요.<br>목록의 이름을 더블클릭하면 수정할 수 있습니다.</p>';
   if (!item) return;
-  if (page) initRichEditor(page);
+  if (page) { initRichEditor(page); initPageAssets(); }
   history = [memoSnapshot()]; historyIndex = 0;
   $('#memo-name').oninput = () => updateMemo(); $('#memo-phone').oninput = () => updateMemo();
   $('#memo-kind').onchange = e => { changeMemoKind(item, e.target.value); selectedFolder = item.folderId; persist(); renderMemoLists(); $('#memo-phone-label').hidden = item.kind !== 'task'; };
@@ -131,7 +131,7 @@ function selectPage(id) {
   const item = activeMemo(); if (!item?.pages.some(p => p.id === id) || id === item.activePageId) return;
   item.activePageId = id; persist(); $('#find-panel').close();
   if (!$('#memo-content')) { renderMemoEditor(); return; }
-  loadRichPage(activePage(item));
+  loadRichPage(activePage(item)); renderAttachments();
   document.querySelectorAll('[data-page-id]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.pageId === id)));
   history = [memoSnapshot()]; historyIndex = 0; updateCount(); updateHistoryButtons();
 }
@@ -141,16 +141,19 @@ function addPage() {
   item.pages.push(p); item.activePageId = p.id; item.updatedAt = memoNow(); persist(); renderMemoEditor(); $('#memo-content').focus();
 }
 function deletePage(id) {
-  const item = activeMemo(); if (!item || !confirm('이 페이지를 삭제할까요? 페이지 내용도 함께 삭제됩니다.')) return;
+  const item = activeMemo(); if (!item || !confirm('이 페이지를 삭제할까요? 내용과 연결된 첨부파일도 함께 삭제됩니다.')) return;
   const index = item.pages.findIndex(p => p.id === id); if (index < 0) return;
+  const removedAssets=pageAssetIds(item.pages[index]);
   item.pages.splice(index, 1); if (item.activePageId === id) item.activePageId = item.pages[Math.min(index, item.pages.length - 1)]?.id || '';
   item.content = item.pages[0]?.content || ''; item.updatedAt = memoNow(); persist(); $('#find-panel').close(); renderMemoEditor(); renderMemoLists();
+  removeUnusedAssets(removedAssets).catch(()=>{});
 }
 function deleteMemo(id) {
-  const item = memoById(id); if (!item || !confirm('선택한 항목과 그 안의 모든 페이지를 삭제할까요? 하위 할 일은 남깁니다.')) return;
+  const item = memoById(id); if (!item || !confirm('항목과 모든 페이지·첨부파일을 삭제할까요? 하위 할 일은 남깁니다.')) return;
+  const removedAssets=item.pages.flatMap(pageAssetIds);
   for (const child of state.memos.filter(m => m.parent === id)) child.parent = item.parent || '';
   state.memos = state.memos.filter(m => m.id !== id); if (memoId === id) memoId = '';
-  persist(); renderMemos();
+  persist(); renderMemos(); removeUnusedAssets(removedAssets).catch(()=>{});
 }
 function deleteFolder(id) {
   const folder = folderById(id); if (!folder || !confirm('폴더를 삭제할까요? 안의 메모와 하위 폴더는 상위로 옮겨 보존합니다.')) return;
@@ -173,24 +176,24 @@ function updateCount() { const editor = $('#memo-content'); if (editor) $('#memo
 function updateMemo(record = true) {
   const item = activeMemo(); if (!item) return;
   item.name = $('#memo-name').value; item.phone = $('#memo-phone').value;
-  const page = activePage(item); if (page && richEditor) { page.content = readRichText(); page.delta = readRichDelta(); }
+  const page = activePage(item); if (page && richEditor) { page.content = readRichText(); page.delta = readRichDelta(); page.assetIds=[...new Set([...(page.assetIds||[]),...deltaAssetIds(page.delta)])]; }
   item.content = item.pages[0]?.content || ''; item.updatedAt = memoNow();
   if (record) { history = history.slice(0, historyIndex + 1); history.push(memoSnapshot()); if (history.length > 200) history.shift(); historyIndex = history.length - 1; }
-  persist(); updateCount(); updateHistoryButtons(); renderMemoLists(); countMatches();
+  const saved=persist(); updateCount(); updateHistoryButtons(); renderMemoLists(); countMatches(); return saved;
 }
 function countMatches() {
   const editor = $('#memo-content'); if (!editor) return;
-  const needle = $('#find-text').value.toLowerCase(), body = readRichText().toLowerCase(); let count = 0, index = 0;
+  const needle = $('#find-text').value.toLowerCase(), body = richSearchText().toLowerCase(); let count = 0, index = 0;
   if (needle) while ((index = body.indexOf(needle, index)) >= 0) { count++; index += needle.length; }
   $('#find-result').textContent = needle ? `${count}개 일치 (대소문자 구분 없음)` : '';
 }
 function tool(action) {
   const editor = $('#memo-content'); if (!editor) return;
   if (action === 'save') { updateMemo(false); return; }
-  if (action === 'focus-find') { if (!$('#find-panel').open) $('#find-panel').show(); const selection = richSelection ? readRichText().slice(richSelection.index,richSelection.index+richSelection.length) : ''; if (selection && !selection.includes('\n')) $('#find-text').value = selection; $('#find-text').focus(); $('#find-text').select(); countMatches(); return; }
+  if (action === 'focus-find') { if (!$('#find-panel').open) $('#find-panel').show(); const selection = richSelection ? richEditor.getText(richSelection.index,richSelection.length) : ''; if (selection && !selection.includes('\n')) $('#find-text').value = selection; $('#find-text').focus(); $('#find-text').select(); countMatches(); return; }
   if (action === 'close-find') { $('#find-panel').close(); editor.focus(); return; }
   if (action === 'undo' || action === 'redo') { const next = historyIndex + (action === 'undo' ? -1 : 1); if (next < 0 || next >= history.length) return; historyIndex = next; for (const key of ['name','phone']) $('#memo-' + key).value = history[next][key]; loadRichDocument(history[next].delta); updateMemo(false); return; }
-  if (action === 'find') { const text = $('#find-text').value; if (!text) return; const body=readRichText().toLowerCase(); let i = body.indexOf(text.toLowerCase(),richSelection ? richSelection.index+richSelection.length : 0); if (i < 0) i = body.indexOf(text.toLowerCase()); if (i >= 0) { selectRichText(i,text.length); $('#find-result').textContent = `${i + 1}번째 글자부터 일치`; } else $('#find-result').textContent = '일치하는 내용이 없습니다.'; return; }
+  if (action === 'find') { const text = $('#find-text').value; if (!text) return; const body=richSearchText().toLowerCase(); let i = body.indexOf(text.toLowerCase(),richSelection ? richSelection.index+richSelection.length : 0); if (i < 0) i = body.indexOf(text.toLowerCase()); if (i >= 0) { selectRichText(i,text.length); $('#find-result').textContent = `${i + 1}번째 글자부터 일치`; } else $('#find-result').textContent = '일치하는 내용이 없습니다.'; return; }
   if (action === 'replace') { const text = $('#find-text').value; if (!text) return; const count=replaceRichText(text,$('#replace-text').value); $('#find-result').textContent = `${count}개 변경했습니다.`; }
 
 }

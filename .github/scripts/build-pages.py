@@ -13,7 +13,7 @@ args = parser.parse_args()
 source = Path(__file__).resolve().parents[2] / "docs"
 args.output.mkdir(parents=True, exist_ok=True)
 html = (source / "index.html").read_text(encoding="utf-8")
-for filename in ("style.css", "app.js", "rich-text.js", "memos.js"):
+for filename in ("style.css", "columns.js", "app.js", "assets.js", "rich-text.js", "memos.js"):
     content = (source / filename).read_bytes()
     digest = hashlib.sha256(content).hexdigest()[:16]
     path = Path(filename)
