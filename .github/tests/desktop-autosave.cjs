@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path'),{spawn}=require('node:child_process');
 const {_electron}=require('playwright-core');
 let stage='자동 저장 검증 시작';const watchdog=setTimeout(()=>{console.error('::error::Windows 자동 저장 검증 시간 초과: '+stage);process.exit(1);},180000);watchdog.unref();
-const waitFor=async(check,message)=>{const end=Date.now()+15000;do{if(await check())return;await new Promise(resolve=>setTimeout(resolve,100));}while(Date.now()<end);throw new Error(message);};
+const waitFor=async(check,message)=>{const end=Date.now()+15000;do{try{if(await check())return;}catch(error){if(error.code!=='ENOENT')throw error;}await new Promise(resolve=>setTimeout(resolve,100));}while(Date.now()<end);throw new Error(message);};
 (async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'skycrm-auto-')),profile=path.join(root,'profile'),remote=path.join(root,'server');let app,server,failed=false;
  try{

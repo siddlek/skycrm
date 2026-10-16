@@ -50,10 +50,11 @@ jobs:
       - name: Test the packaged Windows executable
         run: |
           node .github/tests/desktop.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $desktopMainCode = $LASTEXITCODE
           node .github/tests/desktop-files.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $desktopFilesCode = $LASTEXITCODE
           node .github/tests/desktop-autosave.cjs
+          if ($desktopMainCode -ne 0 -or $desktopFilesCode -ne 0 -or $LASTEXITCODE -ne 0) { exit 1 }
       - name: Build portable EXE
         run: npm --prefix desktop run dist
       - name: Write checksum and validate Windows binary
