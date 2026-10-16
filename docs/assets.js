@@ -42,7 +42,7 @@ async function assetImageURL(id) {
 }
 addEventListener('pagehide',event=>{if(event.persisted)return;for(const url of assetURLs.values())URL.revokeObjectURL(url);assetURLs.clear();assetURLRequests.clear();});
 function attachmentControls() {
-  return '<div class="asset-tools"><button type="button" id="add-attachment">파일 첨부</button><button type="button" id="insert-image">이미지 삽입</button><span>이미지는 커서 위치에 들어갑니다.</span><input type="file" id="attachment-input" multiple hidden><input type="file" id="image-input" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/avif" multiple hidden></div>';
+  return '<div class="asset-tools"><button type="button" id="add-attachment">파일 첨부</button><span>이미지는 붙여넣거나 본문에 끌어 넣으세요.</span><input type="file" id="attachment-input" multiple hidden></div>';
 }
 function captureAssetTarget() {
   const item=activeMemo(),page=activePage(item);if(!item||!page||!richEditor)return null;
@@ -60,7 +60,7 @@ function initPageAssets() {
     button.onmousedown=e=>e.preventDefault();button.onclick=()=>{target=captureAssetTarget();if(target)input.click();};
     input.onchange=()=>{const files=[...input.files];input.value='';const destination=target||captureAssetTarget();if(files.length&&destination)assetTask(()=>addPageFiles(files,destination,images));};
   };
-  choose('add-attachment','attachment-input',false);choose('insert-image','image-input',true);renderAttachments();
+  choose('add-attachment','attachment-input',false);renderAttachments();
   richEditor.root.addEventListener('paste',e=>{
     const files=[...(e.clipboardData?.files||[])];if(!files.length)return;e.preventDefault();e.stopImmediatePropagation();
     const target=captureAssetTarget();assetTask(()=>addPageFiles(files,target,files.every(file=>file.type.startsWith('image/'))));

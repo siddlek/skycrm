@@ -55,7 +55,7 @@ function changeMemoKind(item, kind) {
   else item.folderId = '';
   item.kind = kind; item.updatedAt = memoNow();
 }
-function closeMemoOverlays() { $('#find-panel').close(); hideContextMenu(); $('#rename-dialog')?.close(); }
+function closeMemoOverlays() { destroyImageInteractions(); $('#find-panel').close(); hideContextMenu(); $('#rename-dialog')?.close(); }
 function renderMemos() {
   closeMemoOverlays();
   $('#app').innerHTML = `<div class="memo-layout"><section class="memo-list"><div class="search-row"><input id="memo-search" type="search" aria-label="메모 검색" placeholder="제목·모든 페이지 내용 검색" value="${esc(query)}"></div><div id="memo-lists"></div></section><div id="memo-divider" role="separator" aria-label="목록과 편집 너비 조절" aria-orientation="vertical" aria-valuemin="25" aria-valuemax="75" tabindex="0" title="드래그 또는 좌우 방향키로 너비 조절"></div><section class="panel memo-editor" id="memo-editor"></section></div>`;
@@ -117,6 +117,7 @@ function selectMemo(id) {
 }
 function renderMemoEditor() {
   const item = activeMemo(), page = activePage(item);
+  destroyImageInteractions();
   richEditor = null; richSelection = null; history=[]; historyIndex=-1;
   $('#memo-editor').innerHTML = item ? `<div class="editor-title"><input id="memo-name" aria-label="메모 제목" value="${esc(item.name)}" placeholder="제목"><select id="memo-kind" aria-label="메모 종류"><option value="note" ${item.kind === 'note' ? 'selected' : ''}>일반 메모</option><option value="task" ${item.kind === 'task' ? 'selected' : ''}>할 일</option></select></div><label id="memo-phone-label" ${item.kind === 'task' ? '' : 'hidden'}>전화번호 (선택)<input id="memo-phone" value="${esc(item.phone)}"></label><div class="page-tabs" role="tablist" aria-label="메모 페이지">${item.pages.map(p => `<div class="page-tab"><button role="tab" data-page-id="${esc(p.id)}" aria-selected="${p.id === item.activePageId}"><span data-rename-page="${esc(p.id)}">${esc(p.name)}</span></button><button class="close-page" data-delete-page="${esc(p.id)}" aria-label="${esc(p.name)} 페이지 삭제">×</button></div>`).join('')}<button class="add-page" data-add-page aria-label="페이지 추가">+</button></div>${page ? `${richToolbar()}${attachmentControls()}<div id="memo-rich" class="rich-editor"></div><div class="editor-meta"><span id="memo-count"></span><span>자동 저장</span></div><section id="page-attachments" aria-label="페이지 첨부파일"></section>` : '<p class="empty">위의 +로 새 페이지를 추가하세요.</p>'}` : '<p class="empty">목록 옆 + 또는 우클릭으로 추가하세요.<br>목록의 이름을 더블클릭하면 수정할 수 있습니다.</p>';
   if (!item) return;

@@ -6,17 +6,23 @@ RichSize.whitelist = Array.from({length:89}, (_,i) => (i+8)+'px');
 Quill.register(RichSize, true);
 const Parchment = Quill.import('parchment');
 Quill.register(new Parchment.StyleAttributor('weight', 'font-weight', {scope:Parchment.Scope.INLINE, whitelist:['300','400','500','600','700','800','900']}), true);
+function cleanLocalImage(value) {
+  const image={id:validAssetId(value?.id)?value.id:'',name:String(value?.name||'첨부 이미지')};
+  const width=Number(value?.width);if(Number.isFinite(width)&&width>=24&&width<=2400)image.width=Math.round(width);
+  return image;
+}
 class LocalImageBlot extends Quill.import('blots/embed') {
   static blotName = 'localImage';
   static tagName = 'IMG';
   static className = 'skycrm-local-image';
   static create(value) {
-    const node=super.create();const id=validAssetId(value?.id)?value.id:'';
+    const node=super.create();const image=cleanLocalImage(value),id=image.id;
+    if(image.width)node.style.width=image.width+'px';node.draggable=false;
     node.dataset.assetId=id;node.alt=String(value?.name||'첨부 이미지');node.dataset.assetLoaded='false';
     if(id)assetImageURL(id).then(url=>{node.onload=()=>{node.dataset.assetLoaded='true';};node.onerror=()=>{node.dataset.assetError='true';};node.src=url;}).catch(()=>{node.dataset.assetError='true';node.alt+=' (이 브라우저에서 파일을 읽을 수 없음)';});
     return node;
   }
-  static value(node) { return {id:node.dataset.assetId,name:node.alt}; }
+  static value(node) { return cleanLocalImage({id:node.dataset.assetId,name:node.alt,width:parseFloat(node.style.width)}); }
 }
 Quill.register(LocalImageBlot,true);
 let richEditor = null, richSelection = null;
@@ -34,7 +40,7 @@ function richDocument(page) {
     const ops=[];
     for(const op of page.delta.ops){
       if(typeof op.insert==='string')ops.push({insert:op.insert,attributes:richAttributes(op.attributes)});
-      else if(validAssetId(op.insert?.localImage?.id))ops.push({insert:{localImage:{id:op.insert.localImage.id,name:String(op.insert.localImage.name||'첨부 이미지')}}});
+      else if(validAssetId(op.insert?.localImage?.id))ops.push({insert:{localImage:cleanLocalImage(op.insert.localImage)}});
     }
     const last=ops.at(-1)?.insert;
     if (typeof last!=='string'||!last.endsWith('\n'))ops.push({insert:'\n'});
@@ -50,6 +56,7 @@ function readRichText() { return richEditor ? richEditor.getText(0, Math.max(0, 
 function readRichDelta() { return richEditor ? JSON.parse(JSON.stringify(richEditor.getContents())) : {ops:[{insert:'\n'}]}; }
 function loadRichDocument(document) {
   if (!richEditor) return;
+  clearImageSelection();
   richEditor.setContents(document, 'silent'); richSelection = null; updateRichToolbar();
 }
 function loadRichPage(page) { loadRichDocument(richDocument(page)); }
@@ -70,6 +77,7 @@ function initRichEditor(page) {
       if (key === 'b') applyRichBold(); else tool(key === 'z' ? (e.shiftKey ? 'redo' : 'undo') : ({y:'redo',s:'save'}[key]));
     }
   }, true);
+  initImageInteractions(richEditor);
   // Toolbar controls must not replace the saved text range when they take focus.
   $('#text-bold').onmousedown = e => e.preventDefault();
   $('#text-bold').onclick = applyRichBold;
