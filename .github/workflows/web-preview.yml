@@ -7,6 +7,7 @@ on:
     paths:
       - 'docs/**'
       - '.github/workflows/web-preview.yml'
+      - '.github/scripts/build-pages.py'
 
 permissions:
   contents: read
@@ -27,9 +28,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Build assets with unique filenames
+        run: python3 .github/scripts/build-pages.py "$RUNNER_TEMP/skycrm-pages" --commit "$GITHUB_SHA"
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: docs
+          path: ${{ runner.temp }}/skycrm-pages
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
